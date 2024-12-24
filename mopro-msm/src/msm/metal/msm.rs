@@ -491,14 +491,14 @@ mod tests {
     use ark_std::UniformRand;
     use std::fs::File;
 
-    const INSTANCE_SIZE: u32 = 16;
+    const INSTANCE_SIZE: u32 = 10;
     const NUM_INSTANCE: u32 = 5;
     const UTILSPATH: &str = "src/msm/utils/vectors";
     const BENCHMARKSPATH: &str = "benchmark_results";
 
     #[test]
     fn test_msm_correctness_medium_sample() {
-        let dir = format!("{}/{}/{}x{}", preprocess::get_root_path(), UTILSPATH, 8, 5);
+        let dir = format!("{}/{}/{}x{}", preprocess::get_root_path(), UTILSPATH, INSTANCE_SIZE, 5);
         // Init metal (GPU) state
         let mut metal_config = setup_metal_state();
 
@@ -527,7 +527,7 @@ mod tests {
             assert_eq!(metal_msm, arkworks_msm, "This msm is wrongly computed");
             println!(
                 "(pass) {}th instance of size 2^{} is correctly computed",
-                i, 8
+                i, INSTANCE_SIZE
             );
         }
     }
