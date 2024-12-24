@@ -5,7 +5,10 @@ edition = "2021"
 build = "build.rs"
 
 [features]
-default = ["macos"]
+default = ["macos", "ark"]
+
+ark = ["ark-ec", "ark-bn254", "ark-ff"]
+h2c = ["halo2curves"]
 
 macos = []
 ios = []
@@ -14,38 +17,30 @@ profiling-release = []
 [dependencies]
 ## Shared dependencies
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-once_cell = "1.8"
+ark-std = { version = "=0.4.0", default-features = false, features = ["parallel"] }
 instant = "0.1"
+bincode = "1.3"
+rand = "0.8.5"
 
 # Error handling
 thiserror = "=1.0.39"
 color-eyre = "=0.6.2"
-criterion = "=0.3.6"
 
-## Circom dependencies
-ark-circom = { git = "https://github.com/vimwitch/circom-compat.git" }
-ark-serialize = { version = "=0.4.1", features = ["derive"] }
-num-bigint = { version = "=0.4.3", default-features = false, features = ["rand"] }
-wasmer = { git = "https://github.com/oskarth/wasmer.git", rev = "09c7070" }
-ruint = { version = "1.10.0", features = ["rand", "serde", "ark-ff-04"] }
+## Arkworks dependencies
+ark-ec = { version = "=0.4.1", default-features = false, features = ["parallel"], optional = true }
+ark-bn254 = { version = "=0.4.0", optional = true }
+ark-ff = { version = "=0.4.1", default-features = false, features = ["parallel"], optional = true }
 
-# ZKP generation
-ark-ec = { version = "=0.4.1", default-features = false, features = ["parallel"] }
-ark-crypto-primitives = { version = "=0.4.0" }
-ark-std = { version = "=0.4.0", default-features = false, features = ["parallel"] }
-ark-bn254 = { version = "=0.4.0" }
-ark-groth16 = { version = "=0.4.0", default-features = false, features = ["parallel"] }
-ark-relations = { version = "0.4", default-features = false }
-witness = { git = "https://github.com/philsippl/circom-witness-rs.git" }
+## Halo2 dependencies
+halo2curves = { version = "0.7.0", default-features = false, features = ["derive_serde", "bits"], optional = true }
 
 # GPU explorations
-ark-ff = { version = "=0.4.1", default-features = false, features = ["parallel"] }
 metal = { version = "=0.29.0" }
 objc = { version = "=0.2.7" }
-proptest = { version = "1.4.0" }
 rayon = "1.5.1"
 itertools = "0.13.0"
+log = "0.4.22"
+env_logger = "0.11.6"
 
 [build-dependencies]
 color-eyre = "0.6"
@@ -54,10 +49,7 @@ toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 
-## Circom dependencies
-wasmer = { git = "https://github.com/oskarth/wasmer.git", rev = "09c7070" }
-witness = { git = "https://github.com/philsippl/circom-witness-rs.git" }
-
-# [dependencies.rayon]
-# version = "1"
-# optional=false
+[dev-dependencies]
+criterion = "0.5.1"
+proptest = { version = "1.4.0" }
+num-bigint = { version = "=0.4.3", default-features = false }

@@ -1,4 +1,4 @@
-#[cfg(all(test))]
+#[cfg(all(test, feature = "ark"))]
 mod tests {
     use crate::msm::metal::abstraction::{
         limbs_conversion::{FromLimbs, ToLimbs},
@@ -79,10 +79,16 @@ mod tests {
         }
 
         prop_compose! {
-            fn rand_u128()(n in any::<u128>()) -> BigInteger256 { BigInteger256::from_u128(n) }
+            fn rand_u128()(n in any::<u128>()) -> BigInteger256 {
+                let high = (n >> 64) as u64;
+                let low = n as u64;
+                BigInteger256::new([
+                    low, high, 0, 0,
+                ])
+            }
         }
         prop_compose! {
-            fn rand_u32()(n in any::<u32>()) -> BigInteger256 { BigInteger256::from_u32(n) }
+            fn rand_u32()(n in any::<u32>()) -> BigInteger256 { BigInteger256::from(n) }
         }
 
         use ark_ff::biginteger::{BigInteger, BigInteger256};
@@ -156,6 +162,7 @@ mod tests {
     }
 
     mod fp_tests {
+        use ark_ff::PrimeField;
         use super::*;
 
         use proptest::collection;
@@ -219,7 +226,9 @@ mod tests {
 
         prop_compose! {
             fn rand_field_element()(limbs in rand_limbs()) -> FE {
-                FE::from_u32_limbs(&limbs)
+                FE::from_be_bytes_mod_order(
+                    limbs.iter().map(|&x| x.to_be_bytes()).flatten().collect::<Vec<u8>>().as_slice()
+                )
             }
         }
 
@@ -232,7 +241,17 @@ mod tests {
                 objc::rc::autoreleasepool(|| {
                     result = execute_kernel("fp_bn254_add", &a, Elem(b.clone()));
                 });
+                // let a_str = FE::from_str("7916889888197395428851811989824083825259476282480692443637750063533633301235").unwrap();
+                // let b_str = FE::from_str("13971352983641879793394593755433191263436834874817131219051287831111592907349").unwrap();
+                //
+                // println!("aa: {}", a.to_string());
+                // // println!("a_str: {}", a_str.to_string());
+                // println!("bb: {}", b.to_string());
+                // println!("mod: {}", FE::MODULUS);
                 let local_add = a + b;
+                // let local_str_add = a_str + b_str;
+                // prop_assert_eq!(local_str_add, local_add);
+                prop_assert_eq!(Fq::from_u32_limbs(&result.to_u32_limbs()), local_add);
                 prop_assert_eq!(result, local_add);
             }
 

@@ -1,20 +1,19 @@
-use ark_bn254::{Fq, Fr as ScalarField, G1Affine as GAffine, G1Projective as G};
-use ark_ec::AffineRepr;
-use ark_ff::PrimeField;
+use crate::msm::metal::abstraction::{
+    errors::MetalError,
+    limbs_conversion::{FromLimbs},
+    state::*,
+};
+use crate::msm::utils::{benchmark::BenchmarkResult, preprocess};
 use ark_std::{cfg_into_iter, vec::Vec};
 // For benchmarking
 use std::time::{Duration, Instant};
 
-use crate::msm::metal::abstraction::{
-    errors::MetalError,
-    limbs_conversion::{FromLimbs, ToLimbs},
-    state::*,
-};
-use crate::msm::utils::{benchmark::BenchmarkResult, preprocess};
-
+use crate::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
+use crate::msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use metal::*;
 use objc::rc::autoreleasepool;
-use rayon::prelude::*;
+use rand::rngs::OsRng;
+use rayon::prelude::ParallelSliceMut;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -122,12 +121,12 @@ pub fn setup_metal_state() -> MetalMsmConfig {
     }
 }
 
-pub fn encode_instances(
-    points: &[GAffine],
-    scalars: &[ScalarField],
+pub fn encode_instances<P: PointGPU, S: ScalarGPU>(
+    points: &[P],
+    scalars: &[S],
     config: &mut MetalMsmConfig,
 ) -> MetalMsmInstance {
-    let modulus_bit_size = ScalarField::MODULUS_BIT_SIZE as usize;
+    let modulus_bit_size = S::MODULUS_BIT_SIZE;
 
     let instances_size = ark_std::cmp::min(points.len(), scalars.len());
     let window_size = if instances_size < 32 {
@@ -141,18 +140,11 @@ pub fn encode_instances(
 
     // flatten scalar and base to Vec<u32> for GPU usage
     let scalars_limbs = cfg_into_iter!(scalars)
-        .map(|s| s.into_bigint().to_u32_limbs())
+        .map(S::to_u32_limbs)
         .flatten()
         .collect::<Vec<u32>>();
     let bases_limbs = cfg_into_iter!(points)
-        .map(|b| {
-            let b = b.into_group();
-            b.x.to_u32_limbs()
-                .into_iter()
-                .chain(b.y.to_u32_limbs())
-                .chain(b.z.to_u32_limbs())
-                .collect::<Vec<_>>()
-        })
+        .map(P::to_u32_limbs)
         .flatten()
         .collect::<Vec<u32>>();
 
@@ -205,10 +197,10 @@ pub fn encode_instances(
     }
 }
 
-pub fn exec_metal_commands(
+pub fn exec_metal_commands<P: FromLimbs>(
     config: &MetalMsmConfig,
     instance: MetalMsmInstance,
-) -> Result<G, MetalError> {
+) -> Result<P, MetalError> {
     let data = instance.data;
     let params = instance.params;
 
@@ -229,7 +221,7 @@ pub fn exec_metal_commands(
         command_buffer.commit();
         command_buffer.wait_until_completed();
     });
-    println!("Init buckets time: {:?}", init_time.elapsed());
+    log::debug!("Init buckets time: {:?}", init_time.elapsed());
 
     let prepare_time = Instant::now();
     autoreleasepool(|| {
@@ -251,7 +243,7 @@ pub fn exec_metal_commands(
         command_buffer.commit();
         command_buffer.wait_until_completed();
     });
-    println!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
+    log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
 
     // sort the buckets_indices in CPU parallelly
     let sort_start = Instant::now();
@@ -260,7 +252,7 @@ pub fn exec_metal_commands(
 
     // send the sorted buckets back to GPU
     let sorted_buckets_indices_buffer = config.state.alloc_buffer_data(&buckets_indices);
-    println!("Sort buckets indices time: {:?}", sort_start.elapsed());
+    log::debug!("Sort buckets indices time: {:?}", sort_start.elapsed());
 
     // accumulate the buckets_matrix using sorted bucket indices on GPU
     let max_threads_per_group = MTLSize::new(
@@ -286,11 +278,11 @@ pub fn exec_metal_commands(
             .max_total_threads_per_threadgroup()
         + 1;
     let opt_threadgroups = MTLSize::new(opt_threadgroups_amount, 1, 1);
-    println!(
+    log::debug!(
         "(accumulation) max thread per threadgroup: {:?}",
         max_threads_per_group
     );
-    println!("(accumulation) opt threadgroups: {:?}", opt_threadgroups);
+    log::debug!("(accumulation) opt threadgroups: {:?}", opt_threadgroups);
 
     let max_thread_size_accu_buffer = config.state.alloc_buffer_data(&[max_thread_size as u32]);
     let bucket_wise_time = Instant::now();
@@ -317,7 +309,7 @@ pub fn exec_metal_commands(
         command_buffer.wait_until_completed();
     });
     let bucket_wise_elapsed = bucket_wise_time.elapsed();
-    println!(
+    log::debug!(
         "Bucket wise accumulation time (using {:?} threads): {:?}",
         params.buckets_size as u64 * params.num_window,
         bucket_wise_elapsed
@@ -325,7 +317,7 @@ pub fn exec_metal_commands(
 
     // // debug
     // let debug_data = MetalState::retrieve_contents::<u32>(&data.debug_buffer);
-    // println!("Debug data: {:?}", debug_data);
+    // log::debug!("Debug data: {:?}", debug_data);
 
     // Reduce the buckets_matrix on GPU
     let max_thread_size = params.num_window;
@@ -357,7 +349,7 @@ pub fn exec_metal_commands(
         command_buffer.commit();
         command_buffer.wait_until_completed();
     });
-    println!("Reduction time: {:?}", reduction_time.elapsed());
+    log::debug!("Reduction time: {:?}", reduction_time.elapsed());
 
     // Sequentially accumulate the msm results on GPU
     let final_time = Instant::now();
@@ -377,68 +369,57 @@ pub fn exec_metal_commands(
         command_buffer.commit();
         command_buffer.wait_until_completed();
     });
-    println!("Final accumulation time: {:?}", final_time.elapsed());
+    log::debug!("Final accumulation time: {:?}", final_time.elapsed());
 
     // retrieve and parse the result from GPU
     let msm_result = {
         let raw_limbs = MetalState::retrieve_contents::<u32>(&data.result_buffer);
-        G::new_unchecked(
-            Fq::from_u32_limbs(&raw_limbs[0..8]),
-            Fq::from_u32_limbs(&raw_limbs[8..16]),
-            Fq::from_u32_limbs(&raw_limbs[16..24]),
-        )
+        P::from_u32_limbs(&raw_limbs)
     };
 
     Ok(msm_result)
 }
 
-pub fn metal_msm(
-    points: &[GAffine],
-    scalars: &[ScalarField],
+pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
+    points: &[P],
+    scalars: &[S],
     config: &mut MetalMsmConfig,
-) -> Result<G, MetalError> {
+) -> Result<P, MetalError> {
     let instance = encode_instances(points, scalars, config);
     exec_metal_commands(config, instance)
 }
 
-pub fn benchmark_msm<I>(
-    instances: I,
+pub fn benchmark_msm<P: PointGPU, S: ScalarGPU>(
+    instances: Vec<MsmInstance<P, S>>,
     iterations: u32,
-) -> Result<Vec<Duration>, preprocess::HarnessError>
-where
-    I: Iterator<Item = preprocess::Instance>,
-{
-    println!("Init metal (GPU) state...");
+) -> Result<Vec<Duration>, preprocess::HarnessError> {
+    log::info!("Init metal (GPU) state...");
     let init_start = Instant::now();
     let mut metal_config = setup_metal_state();
     let init_duration = init_start.elapsed();
-    println!("Done initializing metal (GPU) state in {:?}", init_duration);
+    log::info!("Done initializing metal (GPU) state in {:?}", init_duration);
 
     let mut instance_durations = Vec::new();
     for instance in instances {
-        let points = &instance.0;
+        let points = &instance.points;
         // map each scalar to a ScalarField
-        let scalars = &instance
-            .1
-            .iter()
-            .map(|s| ScalarField::new(*s))
-            .collect::<Vec<ScalarField>>();
+        let scalars = &instance.scalars;
 
         let mut instance_total_duration = Duration::ZERO;
         for _i in 0..iterations {
             let encoding_data_start = Instant::now();
-            println!("Encoding instance to GPU memory...");
-            let metal_instance = encode_instances(&points[..], &scalars[..], &mut metal_config);
+            log::info!("Encoding instance to GPU memory...");
+            let metal_instance = encode_instances(points, &scalars[..], &mut metal_config);
             let encoding_data_duration = encoding_data_start.elapsed();
-            println!("Done encoding data in {:?}", encoding_data_duration);
+            log::info!("Done encoding data in {:?}", encoding_data_duration);
 
             let msm_start = Instant::now();
-            let _result = exec_metal_commands(&metal_config, metal_instance).unwrap();
+            let _result = exec_metal_commands::<P>(&metal_config, metal_instance).unwrap();
             instance_total_duration += msm_start.elapsed();
         }
         let instance_avg_duration = instance_total_duration / iterations;
 
-        println!(
+        log::info!(
             "Average time to execute MSM with {} points and {} scalars in {} iterations is: {:?}",
             points.len(),
             scalars.len(),
@@ -450,23 +431,17 @@ where
     Ok(instance_durations)
 }
 
-pub fn run_benchmark(
-    instance_size: u32,
+pub fn run_benchmark<P: PointGPU, S: ScalarGPU + FromLimbs>(
+    log_instance_size: u32,
     num_instance: u32,
-    utils_dir: &str,
+    utils_dir: Option<&str>,
 ) -> Result<BenchmarkResult, preprocess::HarnessError> {
-    // Check if the vectors have been generated
-    match preprocess::FileInputIterator::open(&utils_dir) {
-        Ok(_) => {
-            println!("Vectors already generated");
-        }
-        Err(_) => {
-            preprocess::gen_vectors(instance_size, num_instance, &utils_dir);
-        }
-    }
 
-    let benchmark_data = preprocess::FileInputIterator::open(&utils_dir).unwrap();
-    let instance_durations = benchmark_msm(benchmark_data, 1).unwrap();
+    let rng = OsRng::default();
+
+    let benchmark_data: Vec<MsmInstance<P, S>> = get_or_create_msm_instances(log_instance_size, num_instance, rng, utils_dir)?;
+
+    let instance_durations = benchmark_msm(benchmark_data, 1)?;
     // in milliseconds
     let avg_processing_time: f64 = instance_durations
         .iter()
@@ -474,133 +449,177 @@ pub fn run_benchmark(
         .sum::<f64>()
         / instance_durations.len() as f64;
 
-    println!("Done running benchmark.");
+    log::info!("Done running benchmark.");
     Ok(BenchmarkResult {
-        instance_size: instance_size,
-        num_instance: num_instance,
-        avg_processing_time: avg_processing_time,
+        instance_size: log_instance_size,
+        num_instance,
+        avg_processing_time,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Once;
 
-    use ark_ec::{CurveGroup, Group, VariableBaseMSM};
-    use ark_serialize::Write;
-    use ark_std::UniformRand;
-    use std::fs::File;
+    // Static initializer to ensure the logger is initialized only once
+    static INIT: Once = Once::new();
 
-    const INSTANCE_SIZE: u32 = 16;
-    const NUM_INSTANCE: u32 = 5;
-    const UTILSPATH: &str = "src/msm/utils/vectors";
+    fn init_logger() {
+        INIT.call_once(|| {
+            env_logger::builder()
+                .is_test(true) // Ensures logs go to stdout/stderr in a test-friendly way
+                .init();
+        });
+    }
+
+    const LOG_INSTANCE_SIZE: u32 = 16;
+    const NUM_INSTANCE: u32 = 10;
     const BENCHMARKSPATH: &str = "benchmark_results";
 
-    #[test]
-    fn test_msm_correctness_medium_sample() {
-        let dir = format!("{}/{}/{}x{}", preprocess::get_root_path(), UTILSPATH, 8, 5);
-        // Init metal (GPU) state
-        let mut metal_config = setup_metal_state();
+    #[cfg(feature = "ark")]
+    mod ark {
+        use std::env;
+        use std::fs::File;
+        use std::io::Write;
+        use ark_ec::{CurveGroup, VariableBaseMSM};
+        use ark_std::cfg_into_iter;
+        use rand::rngs::OsRng;
+        use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+        use crate::msm::metal::msm::{metal_msm, run_benchmark, setup_metal_state};
+        use crate::msm::metal::msm::tests::{init_logger, BENCHMARKSPATH, LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::msm::utils::preprocess::get_or_create_msm_instances;
 
-        // Check if the vectors have been generated
-        match preprocess::FileInputIterator::open(&dir) {
-            Ok(_) => {
-                println!("Vectors already generated");
-            }
-            Err(_) => {
-                preprocess::gen_vectors(INSTANCE_SIZE, NUM_INSTANCE, &dir);
-            }
-        }
+        #[test]
+        fn test_msm_correctness_medium_sample_ark() {
+            init_logger();
 
-        let instances = preprocess::FileInputIterator::open(&dir).unwrap();
+            let mut metal_config = setup_metal_state();
+            let rng = OsRng::default();
 
-        for (i, instance) in instances.enumerate() {
-            let points = &instance.0;
-            // map each scalar to a ScalarField
-            let scalars = &instance
-                .1
-                .iter()
-                .map(|s| ScalarField::new(*s))
-                .collect::<Vec<ScalarField>>();
-            let arkworks_msm = G::msm(&points[..], &scalars[..]).unwrap();
-            let metal_msm = metal_msm(&points[..], &scalars[..], &mut metal_config).unwrap();
-            assert_eq!(metal_msm, arkworks_msm, "This msm is wrongly computed");
-            println!(
-                "(pass) {}th instance of size 2^{} is correctly computed",
-                i, 8
-            );
-        }
-    }
+            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(2 << LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
 
-    #[test]
-    fn test_benchmark_msm() {
-        let dir = format!(
-            "{}/{}/{}x{}",
-            preprocess::get_root_path(),
-            UTILSPATH,
-            INSTANCE_SIZE,
-            NUM_INSTANCE
-        );
+            for (i, instance) in instances.iter().enumerate() {
+                let points = &instance.points;
+                // map each scalar to a ScalarField
+                let scalars = &instance.scalars;
 
-        // Check if the vectors have been generated
-        match preprocess::FileInputIterator::open(&dir) {
-            Ok(_) => {
-                println!("Vectors already generated");
-            }
-            Err(_) => {
-                preprocess::gen_vectors(INSTANCE_SIZE, NUM_INSTANCE, &dir);
-            }
-        }
+                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
+                let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
 
-        let benchmark_data = preprocess::FileInputIterator::open(&dir).unwrap();
-        let result = benchmark_msm(benchmark_data, 1);
-        println!("Done running benchmark: {:?}", result);
-    }
-
-    #[test]
-    fn test_run_benchmark() {
-        let utils_path = format!(
-            "{}/{}/{}x{}",
-            preprocess::get_root_path(),
-            &UTILSPATH,
-            INSTANCE_SIZE,
-            NUM_INSTANCE
-        );
-        let result = run_benchmark(INSTANCE_SIZE, NUM_INSTANCE, &utils_path).unwrap();
-        println!("Benchmark result: {:#?}", result);
-    }
-
-    #[test]
-    fn test_run_multi_benchmarks() {
-        let output_path = format!(
-            "{}/{}/{}_benchmark.txt",
-            preprocess::get_root_path(),
-            &BENCHMARKSPATH,
-            "metal_msm"
-        );
-        let mut output_file = File::create(output_path).expect("output file creation failed");
-        writeln!(output_file, "msm_size,num_msm,avg_processing_time(ms)").unwrap();
-
-        let instance_size = vec![8, 12, 16, 18, 20, 22];
-        let num_instance = vec![10];
-        for size in &instance_size {
-            for num in &num_instance {
-                let utils_path = format!(
-                    "{}/{}/{}x{}",
-                    preprocess::get_root_path(),
-                    &UTILSPATH,
-                    *size,
-                    *num
+                let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
+                log::info!(
+                    "(pass) {}th instance of size 2^{} is correctly computed",
+                    i, LOG_INSTANCE_SIZE
                 );
-                let result = run_benchmark(*size, *num, &utils_path).unwrap();
-                println!("{}x{} result: {:#?}", *size, *num, result);
-                writeln!(
-                    output_file,
-                    "{},{},{}",
-                    result.instance_size, result.num_instance, result.avg_processing_time
-                )
-                .unwrap();
+            }
+        }
+
+        #[test]
+        #[ignore]
+        fn test_run_multi_benchmarks() {
+            init_logger();
+
+            let output_path = format!(
+                "{}/{}/{}_ark_benchmark.txt",
+                env::var("CARGO_MANIFEST_DIR").unwrap(),
+                &BENCHMARKSPATH,
+                "metal_msm"
+            );
+            let mut output_file = File::create(output_path).expect("output file creation failed");
+            writeln!(output_file, "msm_size,num_msm,avg_processing_time(ms)").unwrap();
+
+            let log_instance_sizes: Vec<u32> = vec![8, 12, 16, 18, 20, 22];
+            let num_instance: Vec<u32> = vec![10];
+
+            for log_size in log_instance_sizes {
+                for num in &num_instance {
+                    let result = run_benchmark::<ArkG, ArkFr>(log_size, *num, None).unwrap();
+                    log::info!("{}x{} result: {:#?}", log_size, *num, result);
+                    writeln!(
+                        output_file,
+                        "{},{},{}",
+                        result.instance_size, result.num_instance, result.avg_processing_time
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+    }
+
+
+    #[cfg(feature = "h2c")]
+    mod h2c {
+        use std::env;
+        use std::fs::File;
+        use std::io::Write;
+        use ark_std::cfg_into_iter;
+        use halo2curves::group::Curve;
+        use rand::rngs::OsRng;
+        use crate::msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2G};
+        use crate::msm::metal::msm::{metal_msm, run_benchmark, setup_metal_state};
+        use crate::msm::metal::msm::tests::{init_logger, BENCHMARKSPATH, LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::msm::utils::preprocess::get_or_create_msm_instances;
+
+        #[test]
+        fn test_msm_correctness_medium_sample_h2c() {
+            init_logger();
+
+            let mut metal_config = setup_metal_state();
+            let rng = OsRng::default();
+
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+
+            for (i, instance) in instances.iter().enumerate() {
+                let points = &instance.points;
+                // map each scalar to a ScalarField
+                let scalars = &instance.scalars;
+
+                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
+                // let arkworks_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
+                let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
+
+                let metal_msm = metal_msm::<H2G, H2Fr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
+                log::info!(
+                    "(pass) {}th instance of size 2^{} is correctly computed",
+                    i, LOG_INSTANCE_SIZE
+                );
+            }
+        }
+
+
+        #[test]
+        #[ignore]
+        fn test_run_multi_benchmarks() {
+            init_logger();
+
+            let output_path = format!(
+                "{}/{}/{}_h2c_benchmark.txt",
+                env::var("CARGO_MANIFEST_DIR").unwrap(),
+                &BENCHMARKSPATH,
+                "metal_msm"
+            );
+            let mut output_file = File::create(output_path).expect("output file creation failed");
+            writeln!(output_file, "msm_size,num_msm,avg_processing_time(ms)").unwrap();
+
+            let log_instance_sizes: Vec<u32> = vec![8, 12, 16, 18, 20, 22];
+            let num_instance: Vec<u32> = vec![10];
+
+            for log_size in log_instance_sizes {
+                for num in &num_instance {
+                    let result = run_benchmark::<H2G, H2Fr>(log_size, *num, None).unwrap();
+                    log::info!("{}x{} result: {:#?}", log_size, *num, result);
+                    writeln!(
+                        output_file,
+                        "{},{},{}",
+                        result.instance_size, result.num_instance, result.avg_processing_time
+                    )
+                    .unwrap();
+                }
             }
         }
     }
+
 }
