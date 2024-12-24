@@ -15,15 +15,17 @@ Currently we support these MSM algorithms on BN254:
 
 Replace `MSM_ALGO` with one of the algorithms above to get the corresponding benchmarks.
 
-Benchmarking for <u>single instance size</u>:
+Benchmarking using Criterion (recommended)
 ```sh
-cargo test --release --package mopro-msm --lib -- msm::MSM_ALGO::tests::test_run_benchmark --exact --nocapture
+cargo bench --features h2c 
 ```
 
 Benchmarking for <u>multiple instance size</u>:
 ```sh
-cargo test --release --package mopro-msm --lib -- msm::MSM_ALGO::tests::test_run_multi_benchmarks --exact --nocapture
+cargo test --release --package mopro-msm --lib -- msm::MSM_ALGO::tests::*test_run_multi_benchmarks --exact --nocapture
 ```
+
+
 
 ## gpu-exploration-app
 

@@ -15,10 +15,20 @@ pub trait ScalarGPU : ToLimbs {
     const MODULUS_BIT_SIZE : usize;
 
     fn random(rng: &mut impl RngCore) -> Self;
+
+    fn into<B : ScalarGPU + FromLimbs>(&self) -> B {
+        assert_eq!(Self::MODULUS_BIT_SIZE, B::MODULUS_BIT_SIZE, "Incompatible scalar sizes");
+        B::from_u32_limbs(&self.to_u32_limbs())
+    }
 }
 
 pub trait PointGPU : FromLimbs + ToLimbs {
     fn random(rng: &mut impl RngCore) -> Self;
+
+    fn into<B : PointGPU>(&self) -> B {
+        assert_eq!(Self::U32_SIZE, B::U32_SIZE, "Incompatible point sizes");
+        B::from_u32_limbs(&self.to_u32_limbs())
+    }
 }
 
 #[cfg(feature = "ark")]
@@ -94,16 +104,6 @@ pub mod ark {
         // convert from big endian to little endian for metal
         fn from_u32_limbs(limbs: &[u32]) -> Self {
             let a = ArkFq::new_unchecked(BigInteger256::from_u32_limbs(limbs));
-
-            // let mut big_int = [0u64; 4];
-            // for (i, limb) in limbs.chunks(2).rev().enumerate() {
-            //     let high = u64::from(limb[0]);
-            //     let low = u64::from(limb[1]);
-            //     big_int[i] = (high << 32) | low;
-            // }
-            // let b = ArkFq::new(mont_reduction::raw_reduction(BigInteger256::from_u32_limbs(limbs)));
-            // println!("a: {:?}, b: {:?}", a, b);
-            // assert_eq!(a.to_u32_lim            // assert_eq!(a.to_u32_limbs(), b.to_u32_limbs(), "bad conversion");bs(), b.to_u32_limbs(), "bad conversion");
             a
         }
     }
@@ -230,7 +230,7 @@ pub mod h2c {
     }
 
     impl FromLimbs for H2G {
-        const U32_SIZE: usize = 8;
+        const U32_SIZE: usize = 24;
 
         fn from_u32_limbs(limbs: &[u32]) -> Self {
             H2G::new_jacobian(
