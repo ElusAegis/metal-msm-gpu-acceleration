@@ -1,3 +1,4 @@
+use std::ops::Add;
 use crate::msm::metal::abstraction::{
     errors::MetalError,
     limbs_conversion::{FromLimbs},
@@ -13,7 +14,8 @@ use crate::msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use metal::*;
 use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
-use rayon::prelude::ParallelSliceMut;
+use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator};
+use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkG};
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -389,6 +391,39 @@ pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
     exec_metal_commands(config, instance)
 }
 
+pub fn metal_msm_parallel<P: PointGPU + Add<P> + Send + Sync, S: ScalarGPU + Send + Sync>(instance: &MsmInstance<P, S>, target_msm_log_size: usize) -> ArkG {
+
+    let points = &instance.points;
+    let scalars = &instance.scalars;
+
+    let chunk_size = target_msm_log_size;
+
+    let partial_results: Result<Vec<_>, _> = points
+        .chunks(chunk_size)       // chunk the points
+        .zip(scalars.chunks(chunk_size))  // chunk the scalars similarly
+        .collect::<Vec<_>>()      // collect into a Vec so we can .into_par_iter()
+        .into_par_iter()          // parallel iteration
+        .map(|(pts_chunk, scs_chunk)| {
+            let metal_config_start = instant::Instant::now();
+            let mut metal_config = setup_metal_state();
+            log::debug!("Done setting up metal state in {:?}", metal_config_start.elapsed());
+            // Each parallel thread processes one chunk:
+            let metal_instance = encode_instances(pts_chunk, scs_chunk, &mut metal_config);
+            exec_metal_commands(&metal_config, metal_instance)
+        })
+        .collect();
+
+    let partials = partial_results.unwrap();
+    let final_acc = partials
+        .into_iter()
+        .reduce(|acc, x| (acc + x))
+        // or if you have an identity element
+        .unwrap_or_else(|| ArkG::from_u32_limbs(&[0; 24]));
+
+    final_acc
+
+}
+
 pub fn benchmark_msm<P: PointGPU, S: ScalarGPU>(
     instances: Vec<MsmInstance<P, S>>,
     iterations: u32,
@@ -485,9 +520,9 @@ mod tests {
         use ark_std::cfg_into_iter;
         use rand::rngs::OsRng;
         use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-        use crate::msm::metal::msm::{metal_msm, run_benchmark, setup_metal_state};
+        use crate::msm::metal::msm::{metal_msm, metal_msm_parallel, run_benchmark, setup_metal_state};
         use crate::msm::metal::msm::tests::{init_logger, BENCHMARKSPATH, LOG_INSTANCE_SIZE, NUM_INSTANCE};
-        use crate::msm::utils::preprocess::get_or_create_msm_instances;
+        use crate::msm::utils::preprocess::{get_or_create_msm_instances};
 
         #[test]
         fn test_msm_correctness_medium_sample_ark() {
@@ -496,7 +531,7 @@ mod tests {
             let mut metal_config = setup_metal_state();
             let rng = OsRng::default();
 
-            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(2 << LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
@@ -543,6 +578,34 @@ mod tests {
                     )
                     .unwrap();
                 }
+            }
+        }
+
+        #[test]
+        fn test_parallel_gpu_metal_msm_correctness() {
+            init_logger();
+
+            let rng = OsRng::default();
+            let mut metal_config = setup_metal_state();
+
+            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+
+            for (i, instance) in instances.iter().enumerate() {
+                let points = &instance.points;
+                // map each scalar to a ScalarField
+                let scalars = &instance.scalars;
+
+                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
+                let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
+
+                let metal_msm_par = metal_msm_parallel(instance, 10);
+                let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
+                assert_eq!(metal_msm.into_affine(), metal_msm_par.into_affine(), "This parallel msm is wrongly computed");
+                log::info!(
+                    "(pass) {}th instance of size 2^{} is correctly computed",
+                    i, LOG_INSTANCE_SIZE
+                );
             }
         }
 
