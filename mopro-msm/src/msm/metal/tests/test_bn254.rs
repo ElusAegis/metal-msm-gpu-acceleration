@@ -317,20 +317,12 @@ mod tests {
 
         use super::*;
 
-        fn point_to_u32_limbs(p: &G) -> Vec<u32> {
-            p.x.to_u32_limbs()
-                .into_iter()
-                .chain(p.y.to_u32_limbs())
-                .chain(p.z.to_u32_limbs())
-                .collect()
-        }
-
-        fn execute_kernel(name: &str, p: &G, q: &G) -> Vec<u32> {
+        fn execute_kernel<P: ToLimbs, Q: ToLimbs>(name: &str, p: &P, q: &Q) -> Vec<u32> {
             let state = MetalState::new(None).unwrap();
             let pipeline = state.setup_pipeline(name).unwrap();
 
-            let p_coordinates: Vec<u32> = point_to_u32_limbs(p);
-            let q_coordinates: Vec<u32> = point_to_u32_limbs(q);
+            let p_coordinates: Vec<u32> = p.to_u32_limbs();
+            let q_coordinates: Vec<u32> = q.to_u32_limbs();
 
             let p_buffer = state.alloc_buffer_data(&p_coordinates);
             let q_buffer = state.alloc_buffer_data(&q_coordinates);
