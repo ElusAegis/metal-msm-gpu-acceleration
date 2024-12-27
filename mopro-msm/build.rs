@@ -100,17 +100,11 @@ fn compile_shaders() {
 
 #[cfg(feature = "macos")]
 fn get_sdk() -> &'static str {
-    "macosx"
-}
-
-#[cfg(not(feature = "macos"))]
-#[cfg(feature = "ios")]
-fn get_sdk() -> &'static str {
-    "iphoneos"
-}
-
-#[cfg(not(feature = "macos"))]
-#[cfg(not(feature = "ios"))]
-fn get_sdk() -> &'static str {
-    panic!("one of the features macos or ios needs to be enabled");
+    if cfg!(feature = "macos") {
+        "macosx"
+    } else if cfg!(feature = "ios") {
+        "ios"
+    } else {
+        panic!("one of the features macos or ios needs to be enabled")
+    }
 }
