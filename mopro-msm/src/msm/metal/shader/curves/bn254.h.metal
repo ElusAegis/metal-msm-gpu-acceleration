@@ -5,7 +5,7 @@
 #include "../tests/test_bn254.h.metal"
 
 namespace {
-    typedef ECPoint<FpBN254, 0> BN254;
+    typedef ECPoint<FpBN254, 0, u256> BN254;
     typedef UnsignedInteger<8> u256;
 }
 
@@ -14,6 +14,13 @@ template [[ host_name("bn254_add") ]]
     constant FpBN254*,
     constant FpBN254*,
     device FpBN254*
+);
+
+template [[ host_name("bn254_scalar_mul") ]]
+[[kernel]] void bn254_scalar_mul<BN254, FpBN254, u256>(
+    constant FpBN254* point [[ buffer(0) ]],
+    constant u256& scalar [[ buffer(1) ]],
+    device FpBN254* result [[ buffer(2) ]]
 );
 
 template [[ host_name("fp_bn254_add") ]]

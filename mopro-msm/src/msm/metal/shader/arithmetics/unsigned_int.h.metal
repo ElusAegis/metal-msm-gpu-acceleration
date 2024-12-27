@@ -174,6 +174,15 @@ struct UnsignedInteger {
         return *this;
     }
 
+    constexpr UnsignedInteger operator&(const UnsignedInteger rhs) const
+    {
+        metal::array<uint32_t, NUM_LIMBS> limbs {};
+        for (uint32_t i = 0; i < NUM_LIMBS; i++) {
+            limbs[i] = m_limbs[i] & rhs.m_limbs[i];
+        }
+        return UnsignedInteger<NUM_LIMBS> {limbs};
+    }
+
     constexpr UnsignedInteger operator<<(const uint32_t times) const
     {
         metal::array<uint32_t, NUM_LIMBS> limbs {};

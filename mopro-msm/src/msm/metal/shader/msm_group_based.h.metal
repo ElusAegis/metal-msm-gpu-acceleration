@@ -13,7 +13,7 @@ namespace {
 constant constexpr uint32_t NUM_LIMBS = 8;  // u256
 
 [[kernel]] void initialize_buckets(
-    constant const uint32_t& _window_size       [[ buffer(0) ]],
+    constant const uint32_t& _windtrow_size       [[ buffer(0) ]],
     constant const uint32_t* _window_starts     [[ buffer(1) ]],
     device Point* buckets_matrix                [[ buffer(2) ]],
     const uint32_t thread_id                    [[ thread_position_in_grid ]],

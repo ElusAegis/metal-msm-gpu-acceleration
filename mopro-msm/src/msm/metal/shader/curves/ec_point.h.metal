@@ -1,6 +1,6 @@
 #pragma once
 
-template<typename Fp, const uint64_t A_CURVE>
+template<typename Fp, const uint64_t A_CURVE, typename Fr>
 class ECPoint {
 public:
     Fp x;
@@ -105,6 +105,37 @@ public:
 
     constexpr bool is_neutral_element(const ECPoint a_point) const {
         return a_point.z == Fp(0); // Updated to check for (1, 1, 0)
+    }
+
+    constexpr ECPoint operate_with_self(const thread Fr& exponent) const {
+        ECPoint result = neutral_element();
+        ECPoint base = *this;
+
+        // We'll copy exponent locally so we can shift it
+        Fr e = exponent;
+        // Use UnsignedInteger::from_int to create a 1 for comparison
+        const Fr one = Fr::from_int(uint32_t(1));
+        for (int i = 0; i < 256; i++) {
+            // If the least significant bit of e is 1, add base to result
+            // TODO - consider using the direct access to relevant byte
+            if ((e & one) == one) {
+                result = result + base;
+            }
+            // Double the base
+            base = base.double_in_place();
+            // Shift exponent right by 1
+            e = e >> 1;
+        }
+
+        return result;
+    }
+
+    constexpr ECPoint operator*(const thread Fr& exponent) const {
+        return operate_with_self(exponent);
+    }
+
+    constexpr void operator*=(const thread Fr& exponent) {
+        *this = operate_with_self(exponent);
     }
 
     constexpr ECPoint double_in_place() const {

@@ -20,6 +20,29 @@ template<typename BN254, typename Fp>
     result[2] = res.z;
 }
 
+template<typename BN254, typename Fp, typename u256>
+[[kernel]] void bn254_scalar_mul(
+    constant Fp* point [[ buffer(0) ]],
+    constant u256& scalar [[ buffer(1) ]],
+    device Fp* result [[ buffer(2) ]]
+)
+{
+    // Load the point into an ECPoint object
+    BN254 P = BN254(point[0], point[1], point[2]);
+
+    // Create a thread-local copy of the scalar
+    thread u256 local_scalar = scalar;
+
+    // Perform scalar multiplication
+    BN254 res = P * local_scalar;
+
+
+    // Write the result back to the output buffer
+    result[0] = res.x;
+    result[1] = res.y;
+    result[2] = res.z;
+}
+
 template<typename Fp>
 [[kernel]] void fp_bn254_add(
     constant FpBN254& _p [[ buffer(0) ]],

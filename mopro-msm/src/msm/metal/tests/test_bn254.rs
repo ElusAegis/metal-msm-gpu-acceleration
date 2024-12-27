@@ -312,6 +312,7 @@ mod tests {
     }
 
     mod ec_tests {
+        use ark_bn254::Fr;
         use ark_ff::UniformRand;
         use ark_std::rand::thread_rng;
 
@@ -356,6 +357,13 @@ mod tests {
             }
         }
 
+        prop_compose! {
+            fn rand_scalar()(_n in any::<u8>()) -> Fr {
+                let rng = &mut thread_rng();
+                Fr::rand(rng)
+            }
+        }
+
         proptest! {
             #[test]
             fn add(p in rand_point(), q in rand_point()) {
@@ -369,6 +377,21 @@ mod tests {
                     Fq::from_u32_limbs(&result[16..24]),
                 );
                 let cpu_result = p + q;
+                prop_assert_eq!(gpu_result, cpu_result);
+            }
+
+            #[test]
+            fn mul(p in rand_point(), s in rand_scalar()) {
+                let mut result = vec![];
+                objc::rc::autoreleasepool(|| {
+                    result = execute_kernel("bn254_scalar_mul", &p, &s);
+                });
+                let gpu_result = G::new(
+                    Fq::from_u32_limbs(&result[0..8]),
+                    Fq::from_u32_limbs(&result[8..16]),
+                    Fq::from_u32_limbs(&result[16..24]),
+                );
+                let cpu_result = p * s;
                 prop_assert_eq!(gpu_result, cpu_result);
             }
 
