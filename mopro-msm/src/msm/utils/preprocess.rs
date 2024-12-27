@@ -212,9 +212,13 @@ where
 }
 
 fn default_msm_vec_repo() -> PathBuf {
-    let out_dir = env::var("OUT_DIR").unwrap();
+    let home_dir = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE")) // Windows fallback
+        .unwrap_or_else(|_| "/tmp".to_string()); // System-wide fallback for Unix or POSIX-like systems
 
-    Path::new(&out_dir).join("msm_vecs")
+    Path::new(&home_dir)
+        .join(".msm_gpu_acceleration")
+        .join("msm_vecs")
 }
 
 #[cfg(all(test, feature = "ark"))]
