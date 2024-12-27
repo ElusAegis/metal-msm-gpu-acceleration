@@ -1,4 +1,5 @@
 use std::ops::Add;
+use std::sync::{Arc, Mutex};
 use crate::msm::metal::abstraction::{
     errors::MetalError,
     limbs_conversion::{FromLimbs},
@@ -15,7 +16,6 @@ use metal::*;
 use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator};
-use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkG};
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -391,37 +391,98 @@ pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
     exec_metal_commands(config, instance)
 }
 
-pub fn metal_msm_parallel<P: PointGPU + Add<P> + Send + Sync, S: ScalarGPU + Send + Sync>(instance: &MsmInstance<P, S>, target_msm_log_size: usize) -> ArkG {
 
+pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: usize) -> P
+where
+    P: PointGPU + Add<P, Output = P> + Send + Sync + Clone,
+    S: ScalarGPU + Send + Sync,
+{
     let points = &instance.points;
     let scalars = &instance.scalars;
 
-    let chunk_size = target_msm_log_size;
+    let chunk_size = 2usize.pow(target_msm_log_size as u32);
 
-    let partial_results: Result<Vec<_>, _> = points
-        .chunks(chunk_size)       // chunk the points
-        .zip(scalars.chunks(chunk_size))  // chunk the scalars similarly
-        .collect::<Vec<_>>()      // collect into a Vec so we can .into_par_iter()
-        .into_par_iter()          // parallel iteration
-        .map(|(pts_chunk, scs_chunk)| {
+    // Shared accumulators
+    let accumulator = Arc::new(Mutex::new(P::from_u32_limbs(&[0; 24])));
+    let metal_state_time = Arc::new(Mutex::new(Duration::ZERO));
+    let encoding_time = Arc::new(Mutex::new(Duration::ZERO));
+    let exec_time = Arc::new(Mutex::new(Duration::ZERO));
+    let sleep_time = Arc::new(Mutex::new(Duration::ZERO));
+
+    points
+        .chunks(chunk_size)
+        .zip(scalars.chunks(chunk_size))
+        .enumerate() // Add index for delay
+        .collect::<Vec<_>>()
+        .into_par_iter()
+        .for_each(|(i, (pts_chunk, scs_chunk))| {
+            // Introduce delay based on chunk index
+            let sleep_start = instant::Instant::now();
+            // std::thread::sleep(Duration::from_millis(i as u64 * 150));
+            let sleep_elapsed = sleep_start.elapsed();
+            {
+                let mut sleep_time = sleep_time.lock().unwrap();
+                *sleep_time += sleep_elapsed;
+            }
+            // Measure time for setting up metal state
             let metal_config_start = instant::Instant::now();
             let mut metal_config = setup_metal_state();
-            log::debug!("Done setting up metal state in {:?}", metal_config_start.elapsed());
-            // Each parallel thread processes one chunk:
+            let metal_state_elapsed = metal_config_start.elapsed();
+            {
+                let mut state_time = metal_state_time.lock().unwrap();
+                *state_time += metal_state_elapsed;
+            }
+            log::debug!("Done setting up metal state in {:?}", metal_state_elapsed);
+
+            // Measure time for encoding instances
+            let encoding_start = instant::Instant::now();
             let metal_instance = encode_instances(pts_chunk, scs_chunk, &mut metal_config);
-            exec_metal_commands(&metal_config, metal_instance)
-        })
-        .collect();
+            let encoding_elapsed = encoding_start.elapsed();
+            {
+                let mut enc_time = encoding_time.lock().unwrap();
+                *enc_time += encoding_elapsed;
+            }
 
-    let partials = partial_results.unwrap();
-    let final_acc = partials
-        .into_iter()
-        .reduce(|acc, x| (acc + x))
-        // or if you have an identity element
-        .unwrap_or_else(|| ArkG::from_u32_limbs(&[0; 24]));
+            // Measure time for executing commands
+            let exec_start = instant::Instant::now();
+            let partial_result = exec_metal_commands(&metal_config, metal_instance).unwrap();
+            let exec_elapsed = exec_start.elapsed();
+            {
+                let mut ex_time = exec_time.lock().unwrap();
+                *ex_time += exec_elapsed;
+            }
 
-    final_acc
+            // Add partial result to the shared accumulator
+            let mut acc = accumulator.lock().unwrap();
+            *acc = acc.clone() + partial_result;
 
+            log::info!("Finished compute thread {i}");
+        });
+
+    // Log aggregated times
+    log::info!(
+        "Total time spent on metal state setup: {:?}",
+        *metal_state_time.lock().unwrap()
+    );
+    log::info!(
+        "Total time spent on encoding instances: {:?}",
+        *encoding_time.lock().unwrap()
+    );
+    log::info!(
+        "Total time spent on executing commands: {:?}",
+        *exec_time.lock().unwrap()
+    );
+    log::info!(
+        "Total time spent on sleeping : {:?}",
+        *sleep_time.lock().unwrap()
+    );
+
+    // Extract the final accumulated result
+    Arc::try_unwrap(accumulator)
+        .map_err(|_| "Failed to unwrap accumulator")
+        .expect("Failed to unwrap accumulator")
+        .into_inner()
+        .unwrap()
 }
 
 pub fn benchmark_msm<P: PointGPU, S: ScalarGPU>(
