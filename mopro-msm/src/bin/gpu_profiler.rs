@@ -1,18 +1,18 @@
-use std::{env};
+use std::env;
 use rand::rngs::OsRng;
 use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-use mopro_msm::msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
+use mopro_msm::msm::metal::msm::{metal_msm_parallel, metal_msm_all_gpu, setup_metal_state, metal_msm};
 use mopro_msm::msm::utils::preprocess::get_or_create_msm_instances;
 
 fn main() {
     // Setup logger
     env_logger::builder().init();
+
     // Parse command-line arguments
     let args: Vec<String> = env::args().collect();
 
-    // Default values
+    // Default value for `log_instance_size`
     let default_log_instance_size: u32 = 16;
-    let default_target_msm_log_size: usize = 13;
 
     // Parse `log_instance_size` argument (if provided)
     let log_instance_size = args.get(1)
@@ -20,17 +20,10 @@ fn main() {
         .unwrap_or(default_log_instance_size);
     log::info!("Log instance size: {}", log_instance_size);
 
-    // Parse `target_msm_log_size` argument (if provided)
-    let target_msm_log_size = args.get(2)
-        .and_then(|arg| arg.parse::<usize>().ok())
-        .unwrap_or(default_target_msm_log_size);
-    log::info!("Target MSM log size: {}", target_msm_log_size);
+    // Parse `RUN_MODE` argument
+    let run_mode = args.get(2).unwrap_or(&"gpu".to_string()).to_lowercase();
+    log::info!("Run mode: {}", run_mode);
 
-    // Check for `RUN_PARALLEL` environment variable
-    let run_parallel = env::var("RUN_PARALLEL")
-        .map(|val| val == "true" || val == "1")
-        .unwrap_or(false);
-    log::info!("Running in parallel mode: {}", run_parallel);
 
     // RNG initialization
     let rng = OsRng::default();
@@ -44,13 +37,31 @@ fn main() {
 
     let start_execution = instant::Instant::now();
 
-    // Process MSM instances
+    // Process MSM instances based on the run mode
     for instance in instances {
-        if run_parallel {
-            let _ = metal_msm_parallel(&instance, target_msm_log_size);
-        } else {
-            let metal_instance = encode_instances(&instance.points, &instance.scalars, &mut metal_config);
-            let _res: ArkG = exec_metal_commands(&metal_config, metal_instance).unwrap();
+        match run_mode.as_str() {
+            "gpu" => {
+                let _ = metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
+            }
+            "par_gpu" => {
+                let _ = metal_msm_parallel(&instance, None);
+            }
+            "all_gpu" => {
+                let batch_size = args.get(3).and_then(|arg| arg.parse::<u32>().ok());
+                let threads_per_tg = args.get(4).and_then(|arg| arg.parse::<u32>().ok());
+
+                let _ = metal_msm_all_gpu(
+                    &instance.points,
+                    &instance.scalars,
+                    &mut metal_config,
+                    batch_size,
+                    threads_per_tg
+                ).unwrap();
+            }
+            _ => {
+                log::error!("Invalid RUN_MODE: {}", run_mode);
+                std::process::exit(1);
+            }
         }
     }
 

@@ -7,7 +7,7 @@
 
 // Number of threads per threadgroup
 // This is calculated based on max threadgroup shared memory size: ~ 32 KB / 96 bytes (size of a Point)
-#define MAX_THREADS_PER_TG 256
+#define MAX_THREADS_PER_TG 340
 
 // Example definitions; adapt as needed
 namespace {

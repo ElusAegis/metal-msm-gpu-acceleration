@@ -397,8 +397,8 @@ pub fn metal_msm_all_gpu<P, S>(
     points: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
-    batch_size: u32,
-    threads_per_tg: u32,
+    batch_size: Option<u32>,
+    threads_per_tg: Option<u32>,
 ) -> Result<P, MetalError>
 where
     P: PointGPU + FromLimbs + Add<P, Output = P>,
@@ -423,18 +423,29 @@ where
     // Number of threads per threadgroup
     // The partial result for each threadgroup will be 96 bytes => 24 u32
     // This is calculated based on max threadgroup shared memory size: ~ 32 KB / 96 bytes (size of a Point)
-    const MAX_MAX_THREADS_PER_TG: u32 = 256;
-    let threads_per_tg = if threads_per_tg <= MAX_MAX_THREADS_PER_TG {
-        threads_per_tg
-    } else {
-        log::warn!(
-            "threads_per_tg ({}) exceeds the maximum allowed value ({}). Using {} instead.",
-            threads_per_tg,
-            MAX_MAX_THREADS_PER_TG,
+    const MAX_MAX_THREADS_PER_TG: u32 = 340;
+    let threads_per_tg: u32 = if let Some(threads_per_tg) = threads_per_tg {
+        if threads_per_tg <= MAX_MAX_THREADS_PER_TG {
+            threads_per_tg
+        } else {
+            log::warn!(
+                "threads_per_tg ({}) exceeds the maximum allowed value ({}). Using {} instead.",
+                threads_per_tg,
+                MAX_MAX_THREADS_PER_TG,
+                MAX_MAX_THREADS_PER_TG
+            );
             MAX_MAX_THREADS_PER_TG
-        );
-        MAX_MAX_THREADS_PER_TG
+        }
+    } else {
+        256
     };
+
+    let batch_size: u32 = if let Some(batch_size) = batch_size {
+        batch_size
+    } else {
+        (points.len() as u32) / threads_per_tg / 512
+    };
+
     // chunk_size = threads_per_tg * batch_size
     let chunk_size = (threads_per_tg as u32) * batch_size;
 
@@ -521,7 +532,7 @@ pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
 }
 
 
-pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: usize) -> P
+pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: Option<usize>) -> P
 where
     P: PointGPU + Add<P, Output = P> + Send + Sync + Clone,
     S: ScalarGPU + Send + Sync,
@@ -529,7 +540,12 @@ where
     let points = &instance.points;
     let scalars = &instance.scalars;
 
-    let chunk_size = 2usize.pow(target_msm_log_size as u32);
+    // We believe optimal chunk size is 1/3 of the target MSM length
+    let chunk_size = if let Some(target_msm_log_size) = target_msm_log_size {
+        2usize.pow(target_msm_log_size as u32)
+    } else {
+        points.len() / 3
+    };
 
     // Shared accumulators
     let accumulator = Arc::new(Mutex::new(P::from_u32_limbs(&[0; 24])));
@@ -788,7 +804,7 @@ mod tests {
                 let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
                 let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
 
-                let metal_msm_par = metal_msm_parallel(instance, 10);
+                let metal_msm_par = metal_msm_parallel(instance, None);
                 let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
                 assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
                 assert_eq!(metal_msm.into_affine(), metal_msm_par.into_affine(), "This parallel msm is wrongly computed");
@@ -816,7 +832,7 @@ mod tests {
                 let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
                 let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
 
-                let metal_msm = metal_msm_all_gpu(&points[..], &scalars[..], &mut metal_config, 4, 256).unwrap();
+                let metal_msm = metal_msm_all_gpu(&points[..], &scalars[..], &mut metal_config, None, None).unwrap();
                 assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",

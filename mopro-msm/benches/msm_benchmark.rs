@@ -42,14 +42,14 @@ fn msm_gpu<P: PointGPU, S: ScalarGPU>(instances: &Vec<MsmInstance<P, S>>) {
     }
 }
 
-fn msm_gpu_par(instances: &Vec<MsmInstance<ArkG, ArkFr>>, target_msm_log_size: usize) {
+fn msm_gpu_par(instances: &Vec<MsmInstance<ArkG, ArkFr>>, target_msm_log_size: Option<usize>) {
 
     for instance in instances {
         let _ = metal_msm_parallel(instance, target_msm_log_size);
     }
 }
 
-fn msm_all_gpu(instances: &Vec<MsmInstance<ArkG, ArkFr>>, batch_size: u32, threads_per_tg: u32) {
+fn msm_all_gpu(instances: &Vec<MsmInstance<ArkG, ArkFr>>, batch_size: Option<u32>, threads_per_tg: Option<u32>) {
     let mut metal_config = setup_metal_state();
 
     for instance in instances {
@@ -117,9 +117,11 @@ fn benchmark_msm(criterion: &mut Criterion) {
     // Benchmark GPU implementation
     bench_group.bench_function("msm_gpu", |b| b.iter(|| msm_gpu(&instances)));
 
-    // Benchmark GPU implementation
-    bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, 13)));
+    // Benchmark parallel GPU implementation
+    bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, None)));
 
+    // Benchmark all GPU implementation
+    bench_group.bench_function("msm_all_gpu", |b| b.iter(|| msm_all_gpu(&instances, None, None)));
 
     bench_group.finish();
 }
@@ -144,7 +146,7 @@ fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
 
     for target_msm_size in target_msm_sizes {
         bench_group.bench_with_input(BenchmarkId::new("msm_gpu_optimal_log_chunk_size", target_msm_size), &target_msm_size, |b, &v| {
-            b.iter(|| msm_gpu_par(&instances, v));
+            b.iter(|| msm_gpu_par(&instances, Some(v)));
         });
     }
 
@@ -191,7 +193,7 @@ fn benchmark_find_optimal_par_all_gpu(criterion: &mut Criterion) {
                 }
 
                 bench_group.bench_with_input(BenchmarkId::new(format!("msm_all_gpu/batch_{}__thread_group_{}__msm_{}", batch_size, threads_per_tg, msm_size), 0), &(batch_size, threads_per_tg), |b, &v| {
-                    b.iter(|| msm_all_gpu(&instances, v.0, v.1));
+                    b.iter(|| msm_all_gpu(&instances, Some(v.0), Some(v.1)));
                 });
             }
         }
