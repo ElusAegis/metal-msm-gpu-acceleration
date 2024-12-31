@@ -74,15 +74,82 @@ void msm_all_gpu(
     uint32_t thread_start = chunk_offset + (t_id * batch_size);
     uint32_t thread_end   = min(thread_start + batch_size, chunk_offset + chunk_len);
 
-    // For code clarity, just do a simple loop
-    for (uint32_t i = thread_start; i < thread_end; i++) {
-        // We have direct access to:  Point operator*(scalar)
-        // Let p = all_points[i], s = all_scalars[i]
-        Point local_point = all_points[i];
-        u256 local_scalar = all_scalars[i];
+    // 1) Choose your window size (C).
+    //    For 25 points, C=4 or C=5 is typically reasonable.
+    constexpr uint32_t C = 5;  // 5-bit window
 
-        local_acc = local_acc + (local_point * local_scalar);
+    // 2) We'll assume 256-bit scalars, so numWindows = ceil(256 / C).
+    //    If your scalar bit-size differs, adjust accordingly.
+    constexpr uint32_t SCALAR_BITS = 256;
+    const uint32_t numWindows = (SCALAR_BITS + C - 1) / C;
+
+    // We'll also define a helper array for "buckets" in each window.
+    // The number of possible bucket indices is 2^C - 1.
+    Point window_buckets[(1 << C) - 1];
+    // ^ If you do it in local thread memory,
+    //   ensure (1 << C)-1 fits your memory constraints
+    //   or you can store them in registers if that is simpler.
+
+    // 3) Pippenger: loop over windows from LSB to MSB
+    for (uint32_t w = 0; w < numWindows; w++) {
+
+        // 3.1) Clear buckets for this window
+        for (uint32_t b = 0; b < (1 << C) - 1; b++) {
+            window_buckets[b] = Point::neutral_element();
+        }
+        // If you have multiple threads doing partial Pippenger,
+        // you might need a barrier here, but if one thread does
+        // all 25 pairs, it's just local.
+
+        // 3.2) Accumulate each of our ~25 scalars/points into the correct bucket
+        //     - Extract c bits from each scalar
+        for (uint32_t i = thread_start; i < thread_end; i++) {
+            // s_i = all_scalars[i], p_i = all_points[i]
+            // Extract bits [w*C .. w*C + (C-1)] from s_i
+            // => a small integer in [0 .. (1<<C)-1]
+
+            // Some pseudo-code to extract bits:
+            // (You can do shifting, masking, etc. with your big-int type.)
+            u256 s_i = all_scalars[i];
+            uint32_t shift_amount = w * C;
+
+            // get the c-bit fragment:
+            //   target_bucket = (s_i >> shift_amount) & ((1 << C) - 1)
+            uint32_t target_bucket = s_i.extract_bits(shift_amount, C);
+
+            //   e.g. if using a method that does: (s_i >> shift_amount).to_uint32() & ((1<<C)-1)
+
+            // Now if target_bucket != 0, add p_i to bucket fragment-1
+            if (target_bucket != 0) {
+                // bucket index = fragment - 1
+                uint32_t b_idx = target_bucket - 1;
+                // accumulate p_i
+                window_buckets[b_idx] = window_buckets[b_idx] + all_points[i];
+            }
+        }
+
+        // 3.3) Now do a "sum reduction" of the buckets from high to low
+        //     The typical trick:
+        //     running_sum = 0
+        //     for b in [ (1<<C)-1 .. 1 ]:
+        //       running_sum += bucket[b-1]
+        //       local_acc += running_sum
+        Point running_sum = Point::neutral_element();
+        for (int32_t b = (1 << C) - 2; b >= 0; b--) {
+            running_sum = running_sum + window_buckets[b];
+            local_acc = local_acc + running_sum;
+        }
+
+        // 3.4) Double local_acc by C bits for the next window
+        //     (skip if w == numWindows-1)
+        if (w < numWindows - 1) {;
+            for (uint32_t dbl = 0; dbl < C; dbl++) {
+                local_acc = local_acc.double_in_place();
+            }
+        }
     }
+
+    // local_acc now holds the sum of all scalars * points
 
     ////////////////////////////////////////////////////////////////////////////
     // 2. Threadgroup Shared Memory + Synchronization

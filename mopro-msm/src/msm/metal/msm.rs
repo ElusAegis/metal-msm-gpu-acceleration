@@ -437,13 +437,13 @@ where
             MAX_MAX_THREADS_PER_TG
         }
     } else {
-        256
+        340
     };
 
     let batch_size: u32 = if let Some(batch_size) = batch_size {
         batch_size
     } else {
-        (points.len() as u32) / threads_per_tg / 512
+        ((points.len() as u32) / 16).div_ceil(threads_per_tg)
     };
 
     // chunk_size = threads_per_tg * batch_size

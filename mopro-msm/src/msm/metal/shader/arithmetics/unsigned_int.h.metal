@@ -266,6 +266,47 @@ struct UnsignedInteger {
 
       return true;
     }
+
+    /// Test if bit `bit_index` is set (1).
+    /// bit_index=0 is the least significant bit.
+    constexpr bool test_bit(uint32_t bit_index) const {
+        if (bit_index >= 32 * NUM_LIMBS) {
+            return false; // out of range
+        }
+        // find the limb and the bit offset
+        // Example: limb  = (NUM_LIMBS - 1) - (bit_index / 32)
+        // Because the LSD is m_limbs[NUM_LIMBS-1].
+        uint32_t limb = (NUM_LIMBS - 1u) - (bit_index / 32u);
+        uint32_t offset = bit_index % 32u;
+        return (m_limbs[limb] >> offset) & 1u;
+    }
+
+    /// Extract up to 32 bits starting at `start` (LSB=0).
+    /// Returns the extracted bits as a uint32_t.
+    /// Example usage for a c-bit window: extract_bits(w*C, C).
+    constexpr uint32_t extract_bits(uint32_t start, uint32_t width) const {
+        // We'll only implement a 0 < width <= 32 version.
+        // Combine up to two limbs if the window crosses a limb boundary.
+        if (width == 0) {
+            return 0;
+        }
+        if (start + width > 32 * NUM_LIMBS) {
+            // Out of range => return 0 or clamp?
+            // We'll clamp here for safety or return 0
+            return 0;
+        }
+
+        // A simple approach: gather bits one by one
+        // (not the fastest but easy to read)
+        uint32_t result = 0u;
+        for (uint32_t i = 0; i < width; i++) {
+            bool bit = test_bit(start + i);
+            if (bit) {
+                result |= (1u << i);
+            }
+        }
+        return result;
+    }
 };
 
 #endif /* unsigned_int_h */

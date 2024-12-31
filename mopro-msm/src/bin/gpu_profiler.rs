@@ -44,7 +44,9 @@ fn main() {
                 let _ = metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
             }
             "par_gpu" => {
-                let _ = metal_msm_parallel(&instance, None);
+                let target_msm_log_size = args.get(3).and_then(|arg| arg.parse::<usize>().ok());
+
+                let _ = metal_msm_parallel(&instance, target_msm_log_size);
             }
             "all_gpu" => {
                 let batch_size = args.get(3).and_then(|arg| arg.parse::<u32>().ok());
