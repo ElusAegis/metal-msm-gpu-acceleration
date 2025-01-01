@@ -184,44 +184,80 @@ constant constexpr uint32_t NUM_LIMBS = 8;  // u256
 
 // window-wise reduction
 [[kernel]] void sum_reduction(
-    constant const uint32_t& _window_size       [[ buffer(0) ]],
-    constant const u256* k_buff                 [[ buffer(1) ]],
-    constant const Point* p_buff                [[ buffer(2) ]],
-    device Point* buckets_matrix                [[ buffer(3) ]],
-    device Point* res                           [[ buffer(4) ]],
-    constant const uint32_t& _max_thread_size   [[ buffer(5) ]],
-    const uint32_t thread_id                    [[ thread_index_in_threadgroup ]]
+    constant uint32_t &window_size        [[ buffer(0) ]],
+    constant u256*    k_buff              [[ buffer(1) ]],
+    constant Point*   p_buff              [[ buffer(2) ]],
+    device   Point*   buckets_matrix      [[ buffer(3) ]],
+    device   Point*   res                 [[ buffer(4) ]],
+
+    // Threadgroup storage for partial sums
+    threadgroup SerBn254Point *shared_accumulators [[ threadgroup(0) ]],
+
+    // Thread/group IDs
+    uint t_id        [[ thread_index_in_threadgroup ]],
+    uint group_id    [[ threadgroup_position_in_grid ]],
+    uint threadcount [[ threads_per_threadgroup ]]
 )
 {
-    uint32_t max_thread_size = _max_thread_size;
-    if (thread_id >= max_thread_size) {
-        return;
+    uint32_t c = window_size;                   // Window exponent
+    uint32_t buckets_len = (1 << c) - 1;        // # of buckets for each window
+    if (group_id >= window_size) return;  // Just a safety check, might not be needed
+
+    // Each thread group corresponds to one window "j = group_id"
+    uint32_t window_base_idx = group_id * buckets_len;
+
+//    // Optionally: check if the scalar for window j is '1' => add base point
+//    // TODO - can this be removed?
+//    if (t_id == 0) {
+//        // If your 'k_buff' usage is relevant:
+//        u256 one_val = u256::from_int((uint32_t) 1);
+//        u256 k = k_buff[group_id];
+//
+//        if (k == one_val) {
+//            // Just initialize res[group_id] by adding p_buff[group_id] once
+//            res[group_id] = Point::neutral_element() + p_buff[group_id];
+//        } else {
+//            res[group_id] = Point::neutral_element();
+//        }
+//    }
+
+    // Divide the buckets among threads within the group
+    uint32_t chunk_size = (buckets_len + threadcount - 1) / threadcount;
+    uint32_t start_idx  = t_id * chunk_size;
+    uint32_t end_idx    = (start_idx + chunk_size < buckets_len)
+                          ? (start_idx + chunk_size)
+                          : buckets_len;
+
+    // Compute partial sums in this thread
+    Point local_sum = Point::neutral_element();
+    for (uint32_t i = start_idx; i < end_idx; i++) {
+        local_sum = local_sum + buckets_matrix[window_base_idx + i];
     }
 
-    uint32_t window_size = _window_size;    // c in arkworks code
-    uint32_t buckets_len = (1 << window_size) - 1;
+    // Write partial sum into threadgroup memory
+    shared_accumulators[t_id] = toSerBn254Point(local_sum);
 
-    u256 one = u256::from_int((uint32_t)1);
-    res[thread_id] = Point::neutral_element();
-    
-    // get the res for the first window
-    if (thread_id == 0) {
-        u256 k = k_buff[thread_id];
-        if (k == one) {
-            Point this_res = res[thread_id];
-            res[thread_id] = this_res + p_buff[thread_id];
+    // Synchronize so all threads have finished writing partial sums
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Parallel reduction of partial sums in shared memory
+    for (uint32_t offset = threadcount / 2; offset > 0; offset >>= 1) {
+        if (t_id < offset) {
+            Point local_accumulator_1 = fromSerBn254Point(shared_accumulators[t_id]);
+            Point local_accumulator_2 = fromSerBn254Point(shared_accumulators[t_id + offset]);
+            Point combined = local_accumulator_1 + local_accumulator_2;
+            shared_accumulators[t_id] = toSerBn254Point(combined);
         }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // Perform sum reduction on buckets
-    // Get the last bucket of this window
-    uint32_t last_bucket_idx = (thread_id + 1) * buckets_len - 1;
-
-    Point running_sum = Point::neutral_element();
-    for (uint32_t i = 0; i < buckets_len; i++) {
-        running_sum = running_sum + buckets_matrix[last_bucket_idx - i];
-        Point this_res = res[thread_id];
-        res[thread_id] = this_res + running_sum;
+    // Thread 0 writes final sum for this window
+    if (t_id == 0) {
+        // Add the reduced bucket sum to the window’s existing value in `res[group_id]`.
+        // If you do NOT want to accumulate, just assign. Otherwise, do an addition:
+        Point final_acc = fromSerBn254Point(shared_accumulators[0]);
+        Point this_res = res[group_id];
+        res[group_id] = this_res + final_acc;
     }
 }
 
