@@ -213,23 +213,45 @@ pub fn exec_metal_commands<P: FromLimbs>(
     let params = instance.params;
 
     // Init the pipleline for MSM
-    let init_time = Instant::now();
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.init_buckets,
-            Some(&[
-                (0, &data.window_size_buffer),
-                (1, &data.window_starts_buffer),
-                (2, &data.buckets_matrix_buffer),
-            ]),
-        );
-        command_encoder
-            .dispatch_thread_groups(MTLSize::new(params.num_window, 1, 1), MTLSize::new(1, 1, 1));
-        command_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
-    log::debug!("Init buckets time: {:?}", init_time.elapsed());
+    {
+        // Number of windows = number of thread groups
+        let num_thread_groups = params.num_window;
+
+        // Each thread group corresponds to one window, but within each window,
+        // we want multiple threads to share the initialization of that window’s buckets.
+        let inits_per_thread = 128; // ~1 thread per 128 initializations
+        let buckets_len = (1 << params.window_size) - 1;
+
+        // Compute threads_per_group, and clamp to device’s maximum to avoid overshooting
+        let threads_per_group = ((buckets_len + inits_per_thread - 1) / inits_per_thread)
+            .min(config.pipelines.init_buckets.max_total_threads_per_threadgroup());
+
+        log::debug!("(init) num_thread_groups:  {num_thread_groups}");
+        log::debug!("(init) threads_per_group: {threads_per_group}");
+        log::debug!("(init) inits_per_thread:  {} (desired {inits_per_thread})", (buckets_len + inits_per_thread - 1) / threads_per_group);
+
+        let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
+        let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
+
+        let init_time = Instant::now();
+        autoreleasepool(|| {
+            let (command_buffer, command_encoder) = config.state.setup_command(
+                &config.pipelines.init_buckets,
+                Some(&[
+                    (0, &data.window_size_buffer),
+                    (1, &data.window_starts_buffer),
+                    (2, &data.buckets_matrix_buffer),
+                ]),
+            );
+
+            // Dispatch: one threadgroup per window, plus multiple threads for that window
+            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
+            command_encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+        });
+        log::debug!("Init buckets time: {:?}", init_time.elapsed());
+    }
 
     let prepare_time = Instant::now();
     autoreleasepool(|| {

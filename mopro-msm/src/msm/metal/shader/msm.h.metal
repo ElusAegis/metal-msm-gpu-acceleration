@@ -13,23 +13,32 @@ namespace {
 constant constexpr uint32_t NUM_LIMBS = 8;  // u256
 
 [[kernel]] void initialize_buckets(
-    constant const uint32_t& _window_size       [[ buffer(0) ]],
-    constant const uint32_t* _window_starts     [[ buffer(1) ]],
-    device Point* buckets_matrix                [[ buffer(2) ]],
-    const uint32_t thread_id                    [[ thread_position_in_grid ]],
-    const uint32_t total_threads                [[ threads_per_grid ]]
+    constant uint32_t &window_size        [[ buffer(0) ]],
+    constant uint32_t *window_starts      [[ buffer(1) ]],
+    device   Point     *buckets_matrix    [[ buffer(2) ]],
+
+    // Threadgroup indexing
+    uint t_id        [[ thread_index_in_threadgroup ]],
+    uint group_id    [[ threadgroup_position_in_grid ]],
+    uint threadcount [[ threads_per_threadgroup ]]
 )
 {
-    if (thread_id >= total_threads) {
-        return;
-    }
+    // Each thread group = one window
+    uint32_t base_idx   = window_starts[group_id];
+    uint32_t c          = window_size;
+    uint32_t buckets_len = (1 << c) - 1;
 
-    uint32_t window_size = _window_size;    // c in arkworks code
-    uint32_t window_idx = _window_starts[thread_id];
-    uint32_t buckets_len = (1 << window_size) - 1;
+    // Partition these buckets among threads in this group
+    uint32_t chunk_size = (buckets_len + threadcount - 1) / threadcount;
+    uint32_t start      = t_id * chunk_size;
+    uint32_t end        = (start + chunk_size < buckets_len)
+                          ? (start + chunk_size)
+                          : buckets_len;
 
-    for (uint32_t i = 0; i < buckets_len; i++) {
-        buckets_matrix[window_idx + i] = Point::neutral_element();
+    Point neutral = Point::neutral_element();
+    // Each thread sets a portion of the window's buckets to the neutral element
+    for (uint32_t i = start; i < end; i++) {
+        buckets_matrix[base_idx + i] = neutral;
     }
 }
 
