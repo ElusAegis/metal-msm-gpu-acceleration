@@ -3,6 +3,7 @@
 #include "curves/bn254.h.metal"
 #include "fields/fp_bn254.h.metal"
 #include "arithmetics/unsigned_int.h.metal"
+#include "curves/ser_point.h.metal"
 
 namespace {
     typedef UnsignedInteger<8> u256;

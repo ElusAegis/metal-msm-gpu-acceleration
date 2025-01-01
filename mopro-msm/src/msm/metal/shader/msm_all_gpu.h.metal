@@ -3,7 +3,7 @@
 #include "curves/bn254.h.metal"
 #include "fields/fp_bn254.h.metal"
 #include "arithmetics/unsigned_int.h.metal"
-#include "arithmetics/pair.h.metal"
+#include "curves/ser_point.h.metal"
 
 // Number of threads per threadgroup
 // This is calculated based on max threadgroup shared memory size: ~ 32 KB / 96 bytes (size of a Point)

@@ -1,22 +1,15 @@
+#pragma once
+
 #include "../arithmetics/unsigned_int.h.metal"
 #include "../fields/fp_bn254.h.metal"
 
 namespace {
     typedef UnsignedInteger<8> u256;
     typedef UnsignedInteger<4> u128;
+    typedef FpBN254 FieldElement;
     typedef ECPoint<FieldElement, 0, u256> BN254Point;
 
 }
-
-//struct SerU64 {
-//    uint32_t high[2];
-//    uint32_t low;
-//};
-//
-//struct SerU128 {
-//    SerU64 high;
-//    SerU64 low;
-//};
 
 struct SerU256 {
     uint32_t u32_limbs[8];
