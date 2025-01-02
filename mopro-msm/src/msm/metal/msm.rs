@@ -207,45 +207,45 @@ pub fn exec_metal_commands<P: FromLimbs>(
     let data = instance.data;
     let params = instance.params;
 
-    // Init the pipleline for MSM
+    // Init the pipleline for MSM - TODO - probably not needed as initialised in accumulation
     {
-        // Number of windows = number of thread groups
-        let num_thread_groups = params.num_window as NSUInteger;
-
-        // Each thread group corresponds to one window, but within each window,
-        // we want multiple threads to share the initialization of that window’s buckets.
-        let inits_per_thread = 128; // ~1 thread per 128 initializations
-        let buckets_len = (1 << params.window_size) - 1;
-
-        // Compute threads_per_group, and clamp to device’s maximum to avoid overshooting
-        let threads_per_group = ((buckets_len + inits_per_thread - 1) / inits_per_thread)
-            .min(config.pipelines.init_buckets.max_total_threads_per_threadgroup());
-
-        log::debug!("(init) num_thread_groups:  {num_thread_groups}");
-        log::debug!("(init) threads_per_group: {threads_per_group}");
-        log::debug!("(init) inits_per_thread:  {} (desired {inits_per_thread})", (buckets_len + inits_per_thread - 1) / threads_per_group);
-
-        let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
-        let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
-
-        let init_time = Instant::now();
-        autoreleasepool(|| {
-            let (command_buffer, command_encoder) = config.state.setup_command(
-                &config.pipelines.init_buckets,
-                Some(&[
-                    (0, &data.window_size_buffer),
-                    (1, &data.window_starts_buffer),
-                    (2, &data.buckets_matrix_buffer),
-                ]),
-            );
-
-            // Dispatch: one threadgroup per window, plus multiple threads for that window
-            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
-            command_encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-        });
-        log::debug!("Init buckets time: {:?}", init_time.elapsed());
+    //     // Number of windows = number of thread groups
+    //     let num_thread_groups = params.num_window as NSUInteger;
+    //
+    //     // Each thread group corresponds to one window, but within each window,
+    //     // we want multiple threads to share the initialization of that window’s buckets.
+    //     let inits_per_thread = 128; // ~1 thread per 128 initializations
+    //     let buckets_len = (1 << params.window_size) - 1;
+    //
+    //     // Compute threads_per_group, and clamp to device’s maximum to avoid overshooting
+    //     let threads_per_group = ((buckets_len + inits_per_thread - 1) / inits_per_thread)
+    //         .min(config.pipelines.init_buckets.max_total_threads_per_threadgroup());
+    //
+    //     log::debug!("(init) num_thread_groups:  {num_thread_groups}");
+    //     log::debug!("(init) threads_per_group: {threads_per_group}");
+    //     log::debug!("(init) inits_per_thread:  {} (desired {inits_per_thread})", (buckets_len + inits_per_thread - 1) / threads_per_group);
+    //
+    //     let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
+    //     let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
+    //
+    //     let init_time = Instant::now();
+    //     autoreleasepool(|| {
+    //         let (command_buffer, command_encoder) = config.state.setup_command(
+    //             &config.pipelines.init_buckets,
+    //             Some(&[
+    //                 (0, &data.window_size_buffer),
+    //                 (1, &data.window_starts_buffer),
+    //                 (2, &data.buckets_matrix_buffer),
+    //             ]),
+    //         );
+    //
+    //         // Dispatch: one threadgroup per window, plus multiple threads for that window
+    //         command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
+    //         command_encoder.end_encoding();
+    //         command_buffer.commit();
+    //         command_buffer.wait_until_completed();
+    //     });
+    //     log::debug!("Init buckets time: {:?}", init_time.elapsed());
     }
 
     let prepare_time = Instant::now();
@@ -281,45 +281,42 @@ pub fn exec_metal_commands<P: FromLimbs>(
 
 
     {
-        // 1. Calculate the total number of possible bucket IDs
+        // 1. Calculate total bucket IDs
         let total_buckets = params.buckets_size * params.num_window;
 
-        // 2. Define the maximum number of GPU threads we actually want to launch
-        //    e.g., limit at 2^18, or read from a config param
+        // 2. Limit maximum GPU threads (e.g., 2^17)
         let max_gpu_threads = 2 << 17;
         let actual_threads  = total_buckets.min(max_gpu_threads) as NSUInteger;
 
-        // 3. Choose how many threads per group (some device/hardware constraint).
-        //    You do NOT rely on the pipeline's "thread_execution_width" here.
-        let threads_per_group = config.pipelines.bucket_wise_accumulation.max_total_threads_per_threadgroup();
+        // 3. Threads per group
+        let threads_per_group = config
+            .pipelines
+            .bucket_wise_accumulation
+            .max_total_threads_per_threadgroup();
 
-        // 4. Compute how many threadgroups we need
+        // 4. Number of threadgroups
         let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;
 
-        // Prepare the MTLSize structures
+        // 5. Prepare MTLSize
         let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
         let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
 
-        // 5. Create a small buffer for 'actual_threads', so the shader knows how many "global IDs" to handle
+        // 6. Create small buffer for '_actual_threads'
         let actual_threads_buffer = config.state.alloc_buffer_data(&[actual_threads]);
 
-        log::debug!("(accumulation) num_thread_groups: {num_thread_groups}");
-        log::debug!("(accumulation) threads_per_group: {threads_per_group}");
-        log::debug!("(accumulation) accumulation per thread: {}", total_buckets / actual_threads as u32);
-        log::debug!("(accumulation) buckets_indices_len: {}", buckets_indices.len());
-
-        // 6. Dispatch the GPU accumulation kernel
+        // 7. Dispatch GPU accumulation kernel
         let bucket_wise_time = Instant::now();
         autoreleasepool(|| {
             let (command_buffer, command_encoder) = config.state.setup_command(
                 &config.pipelines.bucket_wise_accumulation,
                 Some(&[
-                    (0, &data.instances_size_buffer),  // _instances_size
-                    (1, &data.num_windows_buffer),     // _num_windows
-                    (2, &data.base_buffer),            // p_buff
-                    (3, &sorted_buckets_indices_buffer), // buckets_indices
-                    (4, &data.buckets_matrix_buffer),  // buckets_matrix
-                    (5, &actual_threads_buffer),       // total launchable threads
+                    (0, &data.instances_size_buffer),     // _instances_size
+                    (1, &data.num_windows_buffer),        // _num_windows
+                    (2, &data.base_buffer),               // p_buff
+                    (3, &sorted_buckets_indices_buffer),  // buckets_indices
+                    (4, &data.buckets_matrix_buffer),     // buckets_matrix
+                    (5, &actual_threads_buffer),          // _actual_threads
+                    // If needed, also pass 'buckets_indices_len' if it differs from total_buckets
                 ]),
             );
 

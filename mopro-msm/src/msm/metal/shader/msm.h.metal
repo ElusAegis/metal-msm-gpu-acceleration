@@ -90,7 +90,6 @@ constant constexpr uint32_t NUM_LIMBS = 8;  // u256
 // TODO: sorting buckets_indices with bucket_idx as key
 
 uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
-    uint counter = 0;
     uint left = 0;
     uint right = n;
     while (left < right) {
@@ -112,56 +111,100 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
     device   Point * buckets_matrix     [[ buffer(4) ]],
     constant uint & _actual_threads     [[ buffer(5) ]],
 
-    // Threadgroup info
+    // Threadgroup storage for serialized partial sums
+    threadgroup SerBn254Point *shared_accumulators [[ threadgroup(0) ]],
+
+    // Threadgroup-related IDs
     uint t_id             [[ thread_index_in_threadgroup ]],
     uint group_id         [[ threadgroup_position_in_grid ]],
     uint threads_per_tg   [[ threads_per_threadgroup ]]
 )
 {
-    // 1. Total number of bucket IDs = (instances_size * num_windows).
-    //    i.e., valid bucket IDs are in [0..total_buckets).
+    // 1) total number of buckets
     uint total_buckets = _instances_size * _num_windows;
-
-    // 2. Our "global ID" across all thread groups
-    uint global_id = group_id * threads_per_tg + t_id;
-    if (global_id >= _actual_threads) {
+    if (total_buckets == 0) {
         return;
     }
 
-    // 3. Partition the bucket ID space among '_actual_threads'
+    // 2) Our global thread ID
+    uint global_id = group_id * threads_per_tg + t_id;
+    if (global_id >= _actual_threads) {
+        // This thread does nothing
+        return;
+    }
+
+    // 3) Partition the [0..total_buckets) space among _actual_threads
     uint chunk_size   = (total_buckets + _actual_threads - 1) / _actual_threads;
     uint start_bucket = global_id * chunk_size;
     uint end_bucket   = min(start_bucket + chunk_size, total_buckets);
-
     if (start_bucket >= end_bucket) {
-        return; // skip any processing
+        // No buckets to handle
+        return;
     }
 
-    // 4. We'll search for the first occurrence of 'start_bucket' in the
-    //    sorted array 'buckets_indices', so we only do ONE binary search.
-    //    Then we iterate until .x >= end_bucket.
-    //    'indices_len' is the total # of elements in buckets_indices.
-    //    Often, indices_len = total_buckets * (some factor) or simply # of entries in the list.
-    uint indices_len = _num_windows * _instances_size; // Might differ in your code
+    // 4) If you need an explicit length for `buckets_indices`,
+    //    define or pass it. Often it’s just the length of the array.
+    uint indices_len = _instances_size * _num_windows; // or your actual list length
 
-    // 4a. Find the first index where arr[idx].x >= start_bucket
-    uint i = lower_bound_x(buckets_indices, indices_len, start_bucket);
-
-    // 4b. Accumulate while .x < end_bucket
-    uint counter = 0;
-    while (i < indices_len && buckets_indices[i].x < end_bucket) {
-        if (counter++ > 30000) {
-            return;
+    // 5) For each bucket in [start_bucket..end_bucket)
+    for (uint b = start_bucket; b < end_bucket; b++) {
+        // 5a) Find the subrange of `buckets_indices` for .x == b
+        uint i1 = lower_bound_x(buckets_indices, indices_len, b);
+        uint i2 = lower_bound_x(buckets_indices, indices_len, b + 1);
+        if (i1 >= i2) {
+            // No occurrences of this bucket ID
+            // But do barrier to keep group in sync for next bucket
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            continue;
         }
-        uint bid = buckets_indices[i].x;
 
-        // Accumulate:
-        //   buckets_matrix[bid] += p_buff[buckets_indices[i].y]
-        uint yIdx = buckets_indices[i].y;
-        Point old_val = buckets_matrix[bid];
-        buckets_matrix[bid] = old_val + p_buff[yIdx];
+        // 5b) Number of points that map to this bucket
+        uint count_for_bucket = i2 - i1;
 
-        i++;
+        // 5c) We want each thread to handle up to 100 additions
+        const uint chunk_per_thread = 100;
+        uint needed_threads = (count_for_bucket + chunk_per_thread - 1) / chunk_per_thread;
+
+        // 5d) This thread only does work if t_id < needed_threads
+        Point local_sum = Point::neutral_element();
+        if (t_id < needed_threads) {
+            // Determine this thread’s subrange in [i1..i2)
+            uint start_idx = i1 + t_id * chunk_per_thread;
+            uint end_idx   = min(start_idx + chunk_per_thread, i2);
+
+            // Accumulate partial sum
+            for (uint idx = start_idx; idx < end_idx; idx++) {
+                uint yIndex = buckets_indices[idx].y;
+                local_sum = local_sum + p_buff[yIndex];
+            }
+        }
+
+        // 5e) Serialize the local sum and store in threadgroup memory
+        shared_accumulators[t_id] = toSerBn254Point(local_sum);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // 5f) Parallel reduction among the first `needed_threads` threads
+        uint reduce_count = (needed_threads < threads_per_tg)
+                            ? needed_threads
+                            : threads_per_tg;
+
+        for (uint offset = reduce_count >> 1; offset > 0; offset >>= 1) {
+            if (t_id < offset) {
+                Point p1 = fromSerBn254Point(shared_accumulators[t_id]);
+                Point p2 = fromSerBn254Point(shared_accumulators[t_id + offset]);
+                shared_accumulators[t_id] = toSerBn254Point(p1 + p2);
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        // 5g) Thread 0 updates buckets_matrix[b]
+        if (t_id == 0) {
+            Point final_val = fromSerBn254Point(shared_accumulators[0]);
+            buckets_matrix[b] = final_val;
+        }
+
+        // 5h) Barrier before next bucket iteration
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
