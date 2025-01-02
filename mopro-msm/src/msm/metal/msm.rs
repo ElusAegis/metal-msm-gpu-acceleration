@@ -6,7 +6,7 @@ use crate::msm::metal::abstraction::{
     state::*,
 };
 use crate::msm::utils::{benchmark::BenchmarkResult, preprocess};
-use ark_std::{cfg_into_iter, vec::Vec};
+use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::{Duration, Instant};
 use crate::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
@@ -14,7 +14,7 @@ use crate::msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use metal::*;
 use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
-use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator};
+use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -124,7 +124,7 @@ pub fn setup_metal_state() -> MetalMsmConfig {
     }
 }
 
-pub fn encode_instances<P: PointGPU, S: ScalarGPU>(
+pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP: usize, const NS: usize>(
     points: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
@@ -142,16 +142,33 @@ pub fn encode_instances<P: PointGPU, S: ScalarGPU>(
     let num_windows = window_starts.len();
 
     // flatten scalar and base to Vec<u32> for GPU usage
-    let scalars_limbs = cfg_into_iter!(scalars)
-        .map(S::to_u32_limbs)
-        .flatten()
-        .collect::<Vec<u32>>();
-    let bases_limbs = cfg_into_iter!(points)
-        .map(P::to_u32_limbs)
-        .flatten()
-        .collect::<Vec<u32>>();
+    let flatten_start = Instant::now();
+
+    // Preallocate scalars and bases
+    let mut scalars_limbs = vec![0u32; scalars.len() * NS];
+    let mut bases_limbs = vec![0u32; points.len() * NP];
+
+    // Fill scalars_limbs using write_u32_limbs in parallel
+    scalars
+        .par_iter()
+        .zip(scalars_limbs.par_chunks_mut(NS))
+        .for_each(|(scalar, chunk)| {
+            scalar.write_u32_limbs(chunk.try_into().unwrap());
+        });
+
+    // Fill bases_limbs using write_u32_limbs in parallel
+    points
+        .par_iter()
+        .zip(bases_limbs.par_chunks_mut(NP))
+        .for_each(|(point, chunk)| {
+            point.write_u32_limbs(chunk.try_into().unwrap());
+        });
+
+    log::debug!("Encoding flatten time: {:?}", flatten_start.elapsed());
+
 
     // store params to GPU shared memory
+    let store_params_start = Instant::now();
     let window_size_buffer = config.state.alloc_buffer_data(&[window_size as u32]);
     let instances_size_buffer = config.state.alloc_buffer_data(&[instances_size as u32]);
     let scalar_buffer = config.state.alloc_buffer_data(&scalars_limbs);
@@ -173,6 +190,7 @@ pub fn encode_instances<P: PointGPU, S: ScalarGPU>(
     let buckets_indices_buffer = config
         .state
         .alloc_buffer::<u32>(instances_size * num_windows * 2);
+    log::debug!("Store params time: {:?}", store_params_start.elapsed());
 
     // // debug
     // let debug_buffer = config.state.alloc_buffer::<u32>(2048);
@@ -420,8 +438,8 @@ pub fn metal_msm_all_gpu<P, S>(
     threads_per_tg: Option<u32>,
 ) -> Result<P, MetalError>
 where
-    P: PointGPU + FromLimbs + Add<P, Output = P>,
-    S: ScalarGPU,
+    P: PointGPU<24> + FromLimbs + Add<P, Output = P>,
+    S: ScalarGPU<8>,
 {
     // -----------------------------------------------------------------------
     // 1. Flatten points and scalars into u32-limb buffers
@@ -541,7 +559,7 @@ where
     Ok(final_result)
 }
 
-pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
+pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     points: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
@@ -553,8 +571,8 @@ pub fn metal_msm<P: PointGPU, S: ScalarGPU>(
 
 pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: Option<usize>) -> P
 where
-    P: PointGPU + Add<P, Output = P> + Send + Sync + Clone,
-    S: ScalarGPU + Send + Sync,
+    P: PointGPU<24> + Add<P, Output = P> + Send + Sync + Clone,
+    S: ScalarGPU<8> + Send + Sync,
 {
     let points = &instance.points;
     let scalars = &instance.scalars;
@@ -649,7 +667,7 @@ where
         .unwrap()
 }
 
-pub fn benchmark_msm<P: PointGPU, S: ScalarGPU>(
+pub fn benchmark_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     instances: Vec<MsmInstance<P, S>>,
     iterations: u32,
 ) -> Result<Vec<Duration>, preprocess::HarnessError> {
@@ -691,7 +709,7 @@ pub fn benchmark_msm<P: PointGPU, S: ScalarGPU>(
     Ok(instance_durations)
 }
 
-pub fn run_benchmark<P: PointGPU, S: ScalarGPU + FromLimbs>(
+pub fn run_benchmark<P: PointGPU<24> + Sync, S: ScalarGPU<8> + FromLimbs + Sync>(
     log_instance_size: u32,
     num_instance: u32,
     utils_dir: Option<&str>,

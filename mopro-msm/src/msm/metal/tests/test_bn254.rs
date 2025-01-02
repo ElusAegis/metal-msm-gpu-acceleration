@@ -318,7 +318,7 @@ mod tests {
 
         use super::*;
 
-        fn execute_kernel<P: ToLimbs, Q: ToLimbs>(name: &str, p: &P, q: &Q) -> Vec<u32> {
+        fn execute_kernel<P: ToLimbs<24>, Q: ToLimbs<NQ>, const NQ: usize>(name: &str, p: &P, q: &Q) -> Vec<u32> {
             let state = MetalState::new(None).unwrap();
             let pipeline = state.setup_pipeline(name).unwrap();
 

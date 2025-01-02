@@ -1,8 +1,16 @@
 use rand::RngCore;
 
-// implement to_u32_limbs and from_u32_limbs for BigInt<4>
-pub trait ToLimbs {
-    fn to_u32_limbs(&self) -> Vec<u32>;
+pub trait ToLimbs<const N: usize> {
+    /// Writes this object’s limbs directly into `out`.
+    /// No allocations, minimal overhead.
+    fn write_u32_limbs(&self, out: &mut [u32]);
+
+    /// Default method: returns a `[u32; N]` by internally calling `write_u32_limbs`.
+    fn to_u32_limbs(&self) -> Vec<u32> {
+        let mut arr = [0u32; N];
+        self.write_u32_limbs(&mut arr);
+        arr.to_vec()
+    }
 }
 
 pub trait FromLimbs {
@@ -11,21 +19,21 @@ pub trait FromLimbs {
     fn from_u32_limbs(limbs: &[u32]) -> Self;
 }
 
-pub trait ScalarGPU : ToLimbs {
-    const MODULUS_BIT_SIZE : usize;
+pub trait ScalarGPU<const N: usize> : ToLimbs<N> {
+    const MODULUS_BIT_SIZE : usize = N * 32; // Not
 
     fn random(rng: &mut impl RngCore) -> Self;
 
-    fn into<B : ScalarGPU + FromLimbs>(&self) -> B {
+    fn into<B : ScalarGPU<N> + FromLimbs>(&self) -> B {
         assert_eq!(Self::MODULUS_BIT_SIZE, B::MODULUS_BIT_SIZE, "Incompatible scalar sizes");
         B::from_u32_limbs(&self.to_u32_limbs())
     }
 }
 
-pub trait PointGPU : FromLimbs + ToLimbs {
+pub trait PointGPU<const N: usize> : FromLimbs + ToLimbs<N> {
     fn random(rng: &mut impl RngCore) -> Self;
 
-    fn into<B : PointGPU>(&self) -> B {
+    fn into<B : PointGPU<N>>(&self) -> B {
         assert_eq!(Self::U32_SIZE, B::U32_SIZE, "Incompatible point sizes");
         B::from_u32_limbs(&self.to_u32_limbs())
     }
@@ -33,7 +41,7 @@ pub trait PointGPU : FromLimbs + ToLimbs {
 
 #[cfg(feature = "ark")]
 pub mod ark {
-    use ark_ff::{BigInteger, BigInteger256, PrimeField};
+    use ark_ff::{BigInteger256, PrimeField};
     use super::{FromLimbs, PointGPU, ScalarGPU, ToLimbs};
 
     pub use ark_bn254::{Fq as ArkFq, G1Projective as ArkG, Fr as ArkFr, G1Affine as ArkGAffine};
@@ -42,44 +50,55 @@ pub mod ark {
     use rand::RngCore;
 
     // convert from little endian to big endian
-    impl ToLimbs for BigInteger256 {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            let mut limbs = Vec::new();
-            self.to_bytes_be().chunks(8).for_each(|chunk| {
-                let high = u32::from_be_bytes(chunk[0..4].try_into().unwrap());
-                let low = u32::from_be_bytes(chunk[4..8].try_into().unwrap());
-                limbs.push(high);
-                limbs.push(low);
-            });
-            limbs
+    impl ToLimbs<8> for BigInteger256 {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // self.0 is [u64; 4], with self.0[0] being the least significant limb
+            let [a0, a1, a2, a3] = self.0;
+
+            // We want big-endian output:
+            // out[0..2] from the highest 64 bits (a3)
+            // out[2..4] from a2
+            // out[4..6] from a1
+            // out[6..8] from a0 (lowest 64 bits)
+            out[0] = (a3 >> 32) as u32;
+            out[1] = (a3 & 0xFFFF_FFFF) as u32;
+            out[2] = (a2 >> 32) as u32;
+            out[3] = (a2 & 0xFFFF_FFFF) as u32;
+            out[4] = (a1 >> 32) as u32;
+            out[5] = (a1 & 0xFFFF_FFFF) as u32;
+            out[6] = (a0 >> 32) as u32;
+            out[7] = (a0 & 0xFFFF_FFFF) as u32;
         }
     }
 
     // convert from little endian to big endian
-    impl ToLimbs for ArkFq {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            self.0.to_u32_limbs()
+    impl ToLimbs<8> for ArkFq {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // Just delegate to the underlying BigInteger256
+            self.0.write_u32_limbs(out);
         }
     }
 
-    impl ToLimbs for ArkFr {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            self.into_bigint().to_u32_limbs()
+    impl ToLimbs<8> for ArkFr {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // Convert self => BigInteger256 => write
+            self.into_bigint().write_u32_limbs(out);
         }
     }
 
-    impl ToLimbs for ArkG {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-             self.x.to_u32_limbs().into_iter()
-                .chain(self.y.to_u32_limbs())
-                .chain(self.z.to_u32_limbs())
-                .collect::<Vec<_>>()
+    impl ToLimbs<24> for ArkG {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // x, y, z => each is 8 limbs
+            self.x.write_u32_limbs(&mut out[0..8]);
+            self.y.write_u32_limbs(&mut out[8..16]);
+            self.z.write_u32_limbs(&mut out[16..24]);
         }
     }
 
-    impl ToLimbs for ArkGAffine {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            self.into_group().to_u32_limbs()
+    impl ToLimbs<24> for ArkGAffine {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // Convert affine -> projective => write
+            self.into_group().write_u32_limbs(out);
         }
     }
 
@@ -116,7 +135,7 @@ pub mod ark {
         }
     }
 
-    impl ScalarGPU for ArkFr {
+    impl ScalarGPU<8> for ArkFr {
         const MODULUS_BIT_SIZE: usize = <ArkFr as PrimeField>::MODULUS_BIT_SIZE as usize;
 
         fn random(rng: &mut impl RngCore) -> Self {
@@ -136,7 +155,7 @@ pub mod ark {
         }
     }
 
-    impl PointGPU for ArkG {
+    impl PointGPU<24> for ArkG {
         fn random(rng: &mut impl RngCore) -> Self {
             <Self as UniformRand>::rand(rng).into_affine().into_group()
         }
@@ -155,42 +174,39 @@ pub mod h2c {
     use halo2curves::serde::SerdeObject;
     use rand::RngCore;
 
-    impl ToLimbs for H2Fr {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            let mut output = [0u32; 8];
-            let input = self.to_bytes();
+    impl ToLimbs<8> for H2Fr {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            let input = self.to_bytes(); // 32 bytes
+            // Fill out[] in reverse order of 4-byte chunks
             for (i, chunk) in input.chunks_exact(4).rev().enumerate() {
-                output[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                out[i] = u32::from_le_bytes(chunk.try_into().unwrap());
             }
-            output.to_vec()
         }
     }
 
-    impl ToLimbs for H2Fq {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            let mut output = [0u32; 8];
-            let input = self.to_raw_bytes();
+    impl ToLimbs<8> for H2Fq {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            let input = self.to_raw_bytes(); // 32 bytes
             for (i, chunk) in input.chunks_exact(4).rev().enumerate() {
-                output[i] = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                out[i] = u32::from_le_bytes(chunk.try_into().unwrap());
             }
-            output.to_vec()
         }
     }
 
 
-    impl ToLimbs for H2G {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            self.x.to_u32_limbs()
-                .into_iter()
-                .chain(self.y.to_u32_limbs())
-                .chain(self.z.to_u32_limbs())
-                .collect::<Vec<_>>()
+    impl ToLimbs<24> for H2G {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            println!("Before: {:?}", out);
+            self.x.write_u32_limbs(&mut out[0..8]);
+            self.y.write_u32_limbs(&mut out[8..16]);
+            self.z.write_u32_limbs(&mut out[16..24]);
+            println!("After: {:?}", out);
         }
     }
 
-    impl ToLimbs for H2GAffine {
-        fn to_u32_limbs(&self) -> Vec<u32> {
-            self.to_curve().to_u32_limbs()
+    impl ToLimbs<24> for H2GAffine {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            self.to_curve().write_u32_limbs(out);
         }
     }
 
@@ -208,7 +224,7 @@ pub mod h2c {
         }
     }
 
-    impl ScalarGPU for H2Fr {
+    impl ScalarGPU<8> for H2Fr {
         const MODULUS_BIT_SIZE: usize = 254;
 
         fn random(rng: &mut impl RngCore) -> Self {
@@ -241,14 +257,14 @@ pub mod h2c {
         }
     }
 
-    impl PointGPU for H2G {
+    impl PointGPU<24> for H2G {
         fn random(rng: &mut impl RngCore) -> Self {
             <Self as Group>::random(rng).to_affine().to_curve()
         }
     }
 }
 
-#[cfg(all(test, feature = "h2c", feature = "ark"))]
+#[cfg(test)]
 mod test {
     use std::ops::Mul;
     use ark_ff::{Field as ArkField};
@@ -266,6 +282,7 @@ mod test {
     use crate::msm::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
     use super::{FromLimbs, ToLimbs};
 
+    #[cfg(feature = "h2c")]
     prop_compose! {
         fn rand_h2c_fq_element()(seed in any::<u64>()) -> H2Fq {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -273,13 +290,7 @@ mod test {
         }
     }
 
-    prop_compose! {
-        fn rand_ark_fq_element()(seed in any::<u64>()) -> ArkFq {
-            let mut rng = StdRng::seed_from_u64(seed);
-            ArkFq::rand(&mut rng)
-        }
-    }
-
+    #[cfg(feature = "h2c")]
     prop_compose! {
         fn rand_h2c_fr_element()(seed in any::<u64>()) -> H2Fr {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -287,6 +298,7 @@ mod test {
         }
     }
 
+    #[cfg(feature = "h2c")]
     prop_compose! {
         fn rand_h2c_point()(seed in any::<u64>()) -> H2G {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -294,6 +306,15 @@ mod test {
         }
     }
 
+    #[cfg(feature = "ark")]
+    prop_compose! {
+        fn rand_ark_fq_element()(seed in any::<u64>()) -> ArkFq {
+            let mut rng = StdRng::seed_from_u64(seed);
+            ArkFq::rand(&mut rng)
+        }
+    }
+
+    #[cfg(feature = "ark")]
     prop_compose! {
         fn rand_ark_fr_element()(seed in any::<u64>()) -> ArkFr {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -301,6 +322,7 @@ mod test {
         }
     }
 
+    #[cfg(feature = "ark")]
     prop_compose! {
         fn rand_ark_point()(seed in any::<u64>()) -> ArkG {
             let mut rng = StdRng::seed_from_u64(seed);
@@ -312,6 +334,7 @@ proptest! {
 
         #![proptest_config(ProptestConfig::with_cases(100))]
 
+        #[cfg(feature = "h2c")]
         #[test]
         fn test_fr_serialisation_to_limbs_h2c(f in rand_h2c_fr_element()) {
             let limbs = f.to_u32_limbs();
@@ -319,6 +342,7 @@ proptest! {
             prop_assert_eq!(f, f_prime);
         }
 
+        #[cfg(all(feature = "h2c", feature = "ark"))]
         #[test]
         fn test_fr_conversion_between_h2c_to_ark(f_h2c in rand_h2c_fr_element(), p in any::<u64>()) {
             let limbs = f_h2c.to_u32_limbs();
@@ -332,6 +356,7 @@ proptest! {
             prop_assert_eq!(f_pow_h2c.to_u32_limbs(), f_pow_ark.to_u32_limbs());
         }
 
+        #[cfg(feature = "h2c")]
         #[test]
         fn test_fq_serialisation_to_limbs_h2c(f in rand_h2c_fq_element()) {
             let limbs = f.to_u32_limbs();
@@ -339,6 +364,7 @@ proptest! {
             prop_assert_eq!(f, f_prime);
         }
 
+        #[cfg(feature = "ark")]
         #[test]
         fn test_fq_serialisation_to_limbs_ark(f in rand_ark_fq_element()) {
             let limbs = f.to_u32_limbs();
@@ -346,6 +372,7 @@ proptest! {
             prop_assert_eq!(f, f_prime);
         }
 
+        #[cfg(all(feature = "h2c", feature = "ark"))]
         #[test]
         fn test_fq_conversion_between_h2c_to_ark(f_h2c in rand_h2c_fq_element(), p in any::<u64>()) {
             let limbs = f_h2c.to_u32_limbs();
@@ -359,13 +386,16 @@ proptest! {
             prop_assert_eq!(f_pow_h2c.to_u32_limbs(), f_pow_ark.to_u32_limbs());
         }
 
+        #[cfg(feature = "h2c")]
         #[test]
         fn test_point_serialisation_to_limbs_h2c(p in rand_h2c_point()) {
             let limbs = p.to_u32_limbs();
+            println!("{:?}", limbs);
             let p_prime = H2G::from_u32_limbs(&limbs);
             prop_assert_eq!(p, p_prime);
         }
 
+        #[cfg(all(feature = "h2c", feature = "ark"))]
         #[test]
         fn test_point_conversion_between_h2c_to_ark_canonical(p in rand_h2c_point(), m in rand_h2c_fr_element()) {
             // Convert point to canonical form
@@ -392,6 +422,7 @@ proptest! {
             );
         }
 
+        #[cfg(all(feature = "h2c", feature = "ark"))]
         #[test]
         fn test_point_conversion_between_ark_to_h2c_canonical(p in rand_ark_point(), m in rand_ark_fr_element()) {
             // Convert point to canonical form

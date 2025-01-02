@@ -29,8 +29,8 @@ pub struct MsmInstance<P, S> {
 
 impl<P, S> Serialize for MsmInstance<P, S>
 where
-    P: ToLimbs,
-    S: ToLimbs,
+    P: ToLimbs<24>,
+    S: ToLimbs<8>,
 {
     fn serialize<T>(&self, serializer: T) -> Result<T::Ok, T::Error>
     where
@@ -93,8 +93,8 @@ pub fn save_msm_instances<P, S, PathT>(
 ) -> Result<(), HarnessError>
 where
     PathT: AsRef<Path>,
-    P: ToLimbs,
-    S: ToLimbs,
+    P: ToLimbs<24>,
+    S: ToLimbs<8>,
 {
     // We rely on the custom Serialize of MsmInstance<P,S> here
     let mut file = File::create(path)?;
@@ -126,8 +126,8 @@ fn generate_msm_instances<P, S>(
     rng: &mut impl RngCore,
 ) -> Vec<MsmInstance<P, S>>
 where
-    P: PointGPU,
-    S: ScalarGPU + FromLimbs,
+    P: PointGPU<24>,
+    S: ScalarGPU<8> + FromLimbs,
 {
     let mut out = Vec::with_capacity(num_instances as usize);
     for _ in 0..num_instances {
@@ -159,8 +159,8 @@ pub fn get_or_create_msm_instances<P, S>(
     dir: Option<&str>,
 ) -> Result<Vec<MsmInstance<P, S>>, HarnessError>
 where
-    P: PointGPU,
-    S: ScalarGPU + FromLimbs,
+    P: PointGPU<24>,
+    S: ScalarGPU<8> + FromLimbs,
 {
     // Resolve the directory path
     let dir_path = match dir {

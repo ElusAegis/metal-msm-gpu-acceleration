@@ -25,7 +25,7 @@ pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
     }
 }
 
-fn msm_gpu<P: PointGPU, S: ScalarGPU>(instances: &Vec<MsmInstance<P, S>>) {
+fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmInstance<P, S>>) {
 
     let metal_config_start = Instant::now();
     let mut metal_config = setup_metal_state();
