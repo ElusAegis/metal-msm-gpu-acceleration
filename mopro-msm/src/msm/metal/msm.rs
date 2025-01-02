@@ -34,12 +34,11 @@ pub struct MetalMsmParams {
     pub instances_size: u32,
     pub buckets_size: u32,
     pub window_size: u32,
-    pub num_window: u64,
+    pub num_window: u32,
 }
 
 pub struct MetalMsmPipeline {
     pub init_buckets: ComputePipelineState,
-    pub accumulation_and_reduction: ComputePipelineState,
     pub final_accumulation: ComputePipelineState,
     pub prepare_buckets_indices: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
@@ -88,9 +87,6 @@ fn sort_buckets_indices(buckets_indices: &mut Vec<u32>) -> () {
 pub fn setup_metal_state() -> MetalMsmConfig {
     let state = MetalState::new(None).unwrap();
     let init_buckets = state.setup_pipeline("initialize_buckets").unwrap();
-    let accumulation_and_reduction = state
-        .setup_pipeline("accumulation_and_reduction_phase")
-        .unwrap();
     let final_accumulation = state.setup_pipeline("final_accumulation").unwrap();
 
     // TODO:
@@ -119,7 +115,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
         state,
         pipelines: MetalMsmPipeline {
             init_buckets,
-            accumulation_and_reduction,
             final_accumulation,
             prepare_buckets_indices,
             bucket_wise_accumulation,
@@ -200,7 +195,7 @@ pub fn encode_instances<P: PointGPU, S: ScalarGPU>(
             instances_size: instances_size as u32,
             buckets_size: buckets_size as u32,
             window_size: window_size as u32,
-            num_window: num_windows as u64,
+            num_window: num_windows as u32,
         },
     }
 }
@@ -215,7 +210,7 @@ pub fn exec_metal_commands<P: FromLimbs>(
     // Init the pipleline for MSM
     {
         // Number of windows = number of thread groups
-        let num_thread_groups = params.num_window;
+        let num_thread_groups = params.num_window as NSUInteger;
 
         // Each thread group corresponds to one window, but within each window,
         // we want multiple threads to share the initialization of that window’s buckets.
@@ -314,39 +309,52 @@ pub fn exec_metal_commands<P: FromLimbs>(
     );
     log::debug!("(accumulation) opt threadgroups: {:?}", opt_threadgroups);
 
-    let max_thread_size_accu_buffer = config.state.alloc_buffer_data(&[max_thread_size as u32]);
-    let bucket_wise_time = Instant::now();
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.bucket_wise_accumulation,
-            Some(&[
-                (0, &data.instances_size_buffer),
-                (1, &data.num_windows_buffer),
-                (2, &data.base_buffer),
-                (3, &sorted_buckets_indices_buffer),
-                (4, &data.buckets_matrix_buffer),
-                (5, &max_thread_size_accu_buffer),
-                // (6, &data.debug_buffer),
-            ]),
+        // 4. Compute how many threadgroups we need
+        let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;
+
+        // Prepare the MTLSize structures
+        let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
+        let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
+
+        // 5. Create a small buffer for 'actual_threads', so the shader knows how many "global IDs" to handle
+        let actual_threads_buffer = config.state.alloc_buffer_data(&[actual_threads]);
+
+        log::debug!("(accumulation) num_thread_groups: {num_thread_groups}");
+        log::debug!("(accumulation) threads_per_group: {threads_per_group}");
+        log::debug!("(accumulation) accumulation per thread: {}", total_buckets / actual_threads as u32);
+        log::debug!("(accumulation) buckets_indices_len: {}", buckets_indices.len());
+
+        // 6. Dispatch the GPU accumulation kernel
+        let bucket_wise_time = Instant::now();
+        autoreleasepool(|| {
+            let (command_buffer, command_encoder) = config.state.setup_command(
+                &config.pipelines.bucket_wise_accumulation,
+                Some(&[
+                    (0, &data.instances_size_buffer),  // _instances_size
+                    (1, &data.num_windows_buffer),     // _num_windows
+                    (2, &data.base_buffer),            // p_buff
+                    (3, &sorted_buckets_indices_buffer), // buckets_indices
+                    (4, &data.buckets_matrix_buffer),  // buckets_matrix
+                    (5, &actual_threads_buffer),       // total launchable threads
+                ]),
+            );
+
+            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
+            command_encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+        });
+        let bucket_wise_elapsed = bucket_wise_time.elapsed();
+        log::debug!(
+            "Bucket-wise accumulation time (using {} threads, chunked): {:?}",
+            actual_threads,
+            bucket_wise_elapsed
         );
-        // command_encoder.dispatch_thread_groups(
-        //     MTLSize::new(params.buckets_size as u64 * params.num_window, 1, 1),
-        //     MTLSize::new(1, 1, 1),
-        // );
-        command_encoder.dispatch_thread_groups(opt_threadgroups, max_threads_per_group);
-        command_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
-    let bucket_wise_elapsed = bucket_wise_time.elapsed();
-    log::debug!(
-        "Bucket wise accumulation time (using {:?} threads): {:?}",
-        params.buckets_size as u64 * params.num_window,
-        bucket_wise_elapsed
-    );
+    }
+
     {
     // Number of windows = number of thread groups
-        let num_thread_groups = params.num_window;
+        let num_thread_groups = params.num_window as NSUInteger;
 
         // Each thread group is responsible for one window.
         // Tune this value as needed for performance.
@@ -387,25 +395,27 @@ pub fn exec_metal_commands<P: FromLimbs>(
         log::debug!("Reduction time: {:?}", reduction_time.elapsed());
     }
 
-    // Sequentially accumulate the msm results on GPU
-    let final_time = Instant::now();
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.final_accumulation,
-            Some(&[
-                (0, &data.window_size_buffer),
-                (1, &data.window_starts_buffer),
-                (2, &data.num_windows_buffer),
-                (3, &data.res_buffer),
-                (4, &data.result_buffer),
-            ]),
-        );
-        command_encoder.dispatch_thread_groups(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
-        command_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
-    log::debug!("Final accumulation time: {:?}", final_time.elapsed());
+    {
+        // Sequentially accumulate the msm results on GPU
+        let final_time = Instant::now();
+        autoreleasepool(|| {
+            let (command_buffer, command_encoder) = config.state.setup_command(
+                &config.pipelines.final_accumulation,
+                Some(&[
+                    (0, &data.window_size_buffer),
+                    (1, &data.window_starts_buffer),
+                    (2, &data.num_windows_buffer),
+                    (3, &data.res_buffer),
+                    (4, &data.result_buffer),
+                ]),
+            );
+            command_encoder.dispatch_thread_groups(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
+            command_encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+        });
+        log::debug!("Final accumulation time: {:?}", final_time.elapsed());
+    }
 
     // retrieve and parse the result from GPU
     let msm_result = {
