@@ -279,35 +279,19 @@ pub fn exec_metal_commands<P: FromLimbs>(
     let sorted_buckets_indices_buffer = config.state.alloc_buffer_data(&buckets_indices);
     log::debug!("Sort buckets indices time: {:?}", sort_start.elapsed());
 
-    // accumulate the buckets_matrix using sorted bucket indices on GPU
-    let max_threads_per_group = MTLSize::new(
-        config
-            .pipelines
-            .bucket_wise_accumulation
-            .thread_execution_width(),
-        config
-            .pipelines
-            .bucket_wise_accumulation
-            .max_total_threads_per_threadgroup()
-            / config
-                .pipelines
-                .bucket_wise_accumulation
-                .thread_execution_width(),
-        1,
-    );
-    let max_thread_size = params.buckets_size as u64 * params.num_window;
-    let opt_threadgroups_amount = max_thread_size
-        / config
-            .pipelines
-            .bucket_wise_accumulation
-            .max_total_threads_per_threadgroup()
-        + 1;
-    let opt_threadgroups = MTLSize::new(opt_threadgroups_amount, 1, 1);
-    log::debug!(
-        "(accumulation) max thread per threadgroup: {:?}",
-        max_threads_per_group
-    );
-    log::debug!("(accumulation) opt threadgroups: {:?}", opt_threadgroups);
+
+    {
+        // 1. Calculate the total number of possible bucket IDs
+        let total_buckets = params.buckets_size * params.num_window;
+
+        // 2. Define the maximum number of GPU threads we actually want to launch
+        //    e.g., limit at 2^18, or read from a config param
+        let max_gpu_threads = 2 << 17;
+        let actual_threads  = total_buckets.min(max_gpu_threads) as NSUInteger;
+
+        // 3. Choose how many threads per group (some device/hardware constraint).
+        //    You do NOT rely on the pipeline's "thread_execution_width" here.
+        let threads_per_group = config.pipelines.bucket_wise_accumulation.max_total_threads_per_threadgroup();
 
         // 4. Compute how many threadgroups we need
         let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;

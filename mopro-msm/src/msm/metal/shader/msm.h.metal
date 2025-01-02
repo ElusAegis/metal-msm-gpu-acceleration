@@ -89,46 +89,79 @@ constant constexpr uint32_t NUM_LIMBS = 8;  // u256
 
 // TODO: sorting buckets_indices with bucket_idx as key
 
+uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
+    uint counter = 0;
+    uint left = 0;
+    uint right = n;
+    while (left < right) {
+        uint mid = (left + right) >> 1;
+        if (arr[mid].x < key) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return left;
+}
+
 [[kernel]] void bucket_wise_accumulation(
-    constant const uint32_t& _instances_size    [[ buffer(0) ]],
-    constant const uint32_t& _num_windows       [[ buffer(1) ]],
-    constant const Point* p_buff                [[ buffer(2) ]],
-    device uint2* buckets_indices               [[ buffer(3) ]],
-    device Point* buckets_matrix                [[ buffer(4) ]],
-    constant const uint32_t& _max_thread_size   [[ buffer(5) ]],
-    uint2 dispatch_threads_per_threadgroup      [[ dispatch_threads_per_threadgroup ]],
-    uint2 threadgroup_position_in_grid          [[ threadgroup_position_in_grid ]],
-    uint tid                                    [[ thread_index_in_threadgroup ]]
+    constant uint & _instances_size     [[ buffer(0) ]],
+    constant uint & _num_windows        [[ buffer(1) ]],
+    constant Point * p_buff             [[ buffer(2) ]],
+    device   uint2 * buckets_indices    [[ buffer(3) ]],
+    device   Point * buckets_matrix     [[ buffer(4) ]],
+    constant uint & _actual_threads     [[ buffer(5) ]],
+
+    // Threadgroup info
+    uint t_id             [[ thread_index_in_threadgroup ]],
+    uint group_id         [[ threadgroup_position_in_grid ]],
+    uint threads_per_tg   [[ threads_per_threadgroup ]]
 )
 {
-    uint max_threads_per_threadgroup = dispatch_threads_per_threadgroup.x * dispatch_threads_per_threadgroup.y;
-    uint gid = threadgroup_position_in_grid.x;
-    uint thread_id = gid * max_threads_per_threadgroup + tid;
+    // 1. Total number of bucket IDs = (instances_size * num_windows).
+    //    i.e., valid bucket IDs are in [0..total_buckets).
+    uint total_buckets = _instances_size * _num_windows;
 
-    uint32_t max_thread_size = _max_thread_size;
-    if (thread_id >= max_thread_size) {
+    // 2. Our "global ID" across all thread groups
+    uint global_id = group_id * threads_per_tg + t_id;
+    if (global_id >= _actual_threads) {
         return;
     }
 
-    uint32_t num_windows = _num_windows;
-    uint32_t instances_size = _instances_size;
+    // 3. Partition the bucket ID space among '_actual_threads'
+    uint chunk_size   = (total_buckets + _actual_threads - 1) / _actual_threads;
+    uint start_bucket = global_id * chunk_size;
+    uint end_bucket   = min(start_bucket + chunk_size, total_buckets);
 
-    uint32_t bucket_start_idx = 0;
-    uint32_t max_idx = num_windows * instances_size;
-
-    while (thread_id != buckets_indices[bucket_start_idx].x && bucket_start_idx < max_idx) {
-        bucket_start_idx++;
-    }
-    // return if the bucket needs no accumulation
-    if (bucket_start_idx == max_idx) {
-        return;
+    if (start_bucket >= end_bucket) {
+        return; // skip any processing
     }
 
-    // perform bucket-wise accumulation
-    while (thread_id == buckets_indices[bucket_start_idx].x && bucket_start_idx < max_idx) {
-        Point p = buckets_matrix[thread_id];
-        buckets_matrix[thread_id] = p + p_buff[buckets_indices[bucket_start_idx].y];
-        bucket_start_idx++;
+    // 4. We'll search for the first occurrence of 'start_bucket' in the
+    //    sorted array 'buckets_indices', so we only do ONE binary search.
+    //    Then we iterate until .x >= end_bucket.
+    //    'indices_len' is the total # of elements in buckets_indices.
+    //    Often, indices_len = total_buckets * (some factor) or simply # of entries in the list.
+    uint indices_len = _num_windows * _instances_size; // Might differ in your code
+
+    // 4a. Find the first index where arr[idx].x >= start_bucket
+    uint i = lower_bound_x(buckets_indices, indices_len, start_bucket);
+
+    // 4b. Accumulate while .x < end_bucket
+    uint counter = 0;
+    while (i < indices_len && buckets_indices[i].x < end_bucket) {
+        if (counter++ > 30000) {
+            return;
+        }
+        uint bid = buckets_indices[i].x;
+
+        // Accumulate:
+        //   buckets_matrix[bid] += p_buff[buckets_indices[i].y]
+        uint yIdx = buckets_indices[i].y;
+        Point old_val = buckets_matrix[bid];
+        buckets_matrix[bid] = old_val + p_buff[yIdx];
+
+        i++;
     }
 }
 
