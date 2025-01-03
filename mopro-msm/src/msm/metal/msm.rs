@@ -99,17 +99,22 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     points: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
+    window_size: Option<u32>
 ) -> MetalMsmInstance {
     let modulus_bit_size = S::MODULUS_BIT_SIZE;
 
     let instances_size = ark_std::cmp::min(points.len(), scalars.len());
-    let window_size = if instances_size < 32 {
-        3
+    let window_size = if let Some(window_size) = window_size {
+        window_size
     } else {
-        17 // TODO - learn how to calculate this
+        if instances_size < 32 {
+            3
+         } else {
+            17 // TODO - learn how to calculate this
+        }
     };
     let buckets_size = (1 << window_size) - 1;
-    let window_starts: Vec<u32> = (0..modulus_bit_size as u32).step_by(window_size).collect();
+    let window_starts: Vec<u32> = (0..modulus_bit_size as u32).step_by(window_size as usize).collect();
     let num_windows = window_starts.len();
 
     // flatten scalar and base to Vec<u32> for GPU usage
@@ -558,7 +563,7 @@ pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     scalars: &[S],
     config: &mut MetalMsmConfig,
 ) -> Result<P, MetalError> {
-    let instance = encode_instances(points, scalars, config);
+    let instance = encode_instances(points, scalars, config, None);
     exec_metal_commands(config, instance)
 }
 
@@ -612,7 +617,7 @@ where
 
             // Measure time for encoding instances
             let encoding_start = instant::Instant::now();
-            let metal_instance = encode_instances(pts_chunk, scs_chunk, &mut metal_config);
+            let metal_instance = encode_instances(pts_chunk, scs_chunk, &mut metal_config, None);
             let encoding_elapsed = encoding_start.elapsed();
             {
                 let mut enc_time = encoding_time.lock().unwrap();
@@ -681,7 +686,7 @@ pub fn benchmark_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
         for _i in 0..iterations {
             let encoding_data_start = Instant::now();
             log::info!("Encoding instance to GPU memory...");
-            let metal_instance = encode_instances(points, &scalars[..], &mut metal_config);
+            let metal_instance = encode_instances(points, &scalars[..], &mut metal_config, None);
             let encoding_data_duration = encoding_data_start.elapsed();
             log::info!("Done encoding data in {:?}", encoding_data_duration);
 

@@ -32,7 +32,7 @@ fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmIn
     log::debug!("Done setting up metal state in {:?}", metal_config_start.elapsed());
     for instance in instances {
         let encoding_data_start = Instant::now();
-        let metal_instance = encode_instances(&instance.points, &instance.scalars, &mut metal_config);
+        let metal_instance = encode_instances(&instance.points, &instance.scalars, &mut metal_config, None);
         log::debug!("Done encoding data in {:?}", encoding_data_start.elapsed());
 
 
