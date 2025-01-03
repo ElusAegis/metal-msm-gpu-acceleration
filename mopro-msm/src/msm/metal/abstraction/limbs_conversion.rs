@@ -20,7 +20,8 @@ pub trait FromLimbs {
 }
 
 pub trait ScalarGPU<const N: usize> : ToLimbs<N> {
-    const MODULUS_BIT_SIZE : usize = N * 32; // Not
+    const N : usize = N;
+    const MODULUS_BIT_SIZE : usize;
 
     fn random(rng: &mut impl RngCore) -> Self;
 
@@ -266,19 +267,25 @@ pub mod h2c {
 
 #[cfg(test)]
 mod test {
+    #![allow(unused_imports)]
+
     use std::ops::Mul;
-    use ark_ff::{Field as ArkField};
     use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ff::Field;
     use ark_std::UniformRand;
-    use halo2curves::ff::{Field as H2Field};
-    use halo2curves::group::{Curve, Group};
-    use halo2curves::group::prime::PrimeCurveAffine;
+    #[cfg(feature = "h2c")]
+    use halo2curves::{
+        ff::{Field as H2Field},
+        group::{Curve, Group},
+        group::prime::PrimeCurveAffine
+    };
     use proptest::{prop_assert_eq, prop_compose, proptest};
     use proptest::arbitrary::any;
     use proptest::prelude::ProptestConfig;
     use rand::prelude::StdRng;
     use rand::SeedableRng;
     use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
+    #[cfg(feature = "h2c")]
     use crate::msm::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
     use super::{FromLimbs, ToLimbs};
 
