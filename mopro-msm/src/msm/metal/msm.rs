@@ -1,3 +1,5 @@
+mod prepare_buckets_indices;
+
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
 use crate::msm::metal::abstraction::{
@@ -15,6 +17,7 @@ use metal::*;
 use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
+use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -185,29 +188,11 @@ pub fn exec_metal_commands<P: FromLimbs>(
     config: &MetalMsmConfig,
     instance: MetalMsmInstance,
 ) -> Result<P, MetalError> {
-    let data = instance.data;
-    let params = instance.params;
+    let data = &instance.data;
+    let params = &instance.params;
 
     let prepare_time = Instant::now();
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.prepare_buckets_indices,
-            Some(&[
-                (0, &data.window_size_buffer),
-                (1, &data.window_starts_buffer),
-                (2, &data.num_windows_buffer),
-                (3, &data.scalar_buffer),
-                (4, &data.buckets_indices_buffer),
-            ]),
-        );
-        command_encoder.dispatch_thread_groups(
-            MTLSize::new(params.instances_size as u64, 1, 1),
-            MTLSize::new(1, 1, 1),
-        );
-        command_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
+    prepare_buckets_indices(&config, &instance);
     log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
 
 

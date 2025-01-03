@@ -33,12 +33,6 @@ constant constexpr uint32_t NUM_LIMBS = 8;  // u256
     uint32_t buckets_len = (1 << window_size) - 1;
     u256 this_scalar = k_buff[thread_id];
 
-    // skip if the scalar is uint scalar
-    u256 one = u256::from_int((uint32_t)1);
-    if (this_scalar == one) {
-        return;
-    }
-
     // for each window, record the corresponding bucket index and point idx
     for (uint32_t i = 0; i < num_windows; i++) {
         uint32_t window_idx = _window_starts[i];
@@ -46,12 +40,20 @@ constant constexpr uint32_t NUM_LIMBS = 8;  // u256
         uint32_t scalar_fragment = (this_scalar >> window_idx).m_limbs[NUM_LIMBS - 1];
         uint32_t m_ij = scalar_fragment & buckets_len;
 
-        // the case (b_idx, p_idx) = (0, 0) is not possible
+
+        // all the points that are not added are mapped to (0, 0) - uninitialized value
+        // we need to handle this case in the next kernels
+        // the case (b_idx, p_idx) = (0, 0) is ?not possible otherwise?
         // since thread_id == 0 && i == 0 && m_ij == 1 is not possible
+        // TODO - is it really impossible? No, can happen if the lower window of a
+        // scalar is 1. So we instead just add the m_ij = 0 as a special case
         if (m_ij != 0) {
             uint32_t bucket_idx = i * buckets_len + m_ij - 1;
             uint32_t point_idx = thread_id;
             buckets_indices[thread_id * num_windows + i] = uint2(bucket_idx, point_idx);
+        } else {
+            // TODO - we can avoid this case if we sort with when we get (0, 0) above
+            buckets_indices[thread_id * num_windows + i] = uint2(-1, -1);
         }
     }
 }
