@@ -56,18 +56,7 @@ mod test {
     use crate::msm::metal::abstraction::state::MetalState;
     use crate::msm::metal::msm::{encode_instances, setup_metal_state};
     use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-
-
-    // Static initializer to ensure the logger is initialized only once
-    static INIT: Once = Once::new();
-
-    fn init_logger() {
-        INIT.call_once(|| {
-            env_logger::builder()
-                .is_test(true) // Ensures logs go to stdout/stderr in a test-friendly way
-                .init();
-        });
-    }
+    use crate::msm::metal::tests::init_logger;
 
     // Helper function to get a scalar fragment
     // This function copies the logic from the Metal shader UnsignedInteger right shift
@@ -144,14 +133,14 @@ mod test {
         let mut config = setup_metal_state();
 
         // Create mock points and scalars
-        let size = 2;
+        let size = 5;
         let rng = &mut ark_std::test_rng();
         let points: Vec<ArkG> = (0..size).map(|_| ArkG::rand(rng)).collect();
-        let scalars: Vec<ArkFr> = (0..size).map(|_| ArkFr::rand(rng)).collect();
+        let mut scalars: Vec<ArkFr> = (0..size).map(|_| ArkFr::rand(rng)).collect();
         let mut breaking_scalar = BigInt::one();
         breaking_scalar.muln(14);
         breaking_scalar.add_with_carry(&BigInt::one());
-        let scalars: Vec<ArkFr> = vec![ArkFr::from_bigint(breaking_scalar).unwrap()];
+        scalars[0] = ArkFr::from_bigint(breaking_scalar).unwrap();
 
         let instance = encode_instances(&points, &scalars, &mut config, Some(14));
 
@@ -173,57 +162,6 @@ mod test {
             instance.params.num_window,
             &scalars,
         );
-
-        // TODO - remove this block once the implementation is stable
-        {
-
-           // Helper function to create a frequency map
-            fn create_frequency_map(buckets: &HashSet<(u32, u32)>) -> HashMap<u32, usize> {
-                let mut freq_map = HashMap::new();
-                for (bucket, _) in buckets {
-                    *freq_map.entry(*bucket).or_insert(0) += 1;
-                }
-                freq_map
-            }
-
-            // Create frequency maps for Rust and GPU results
-            let rust_freq_map = create_frequency_map(&rust_buckets_indices);
-            let gpu_freq_map = create_frequency_map(&gpu_buckets_indices);
-
-            // Helper function to count the distribution of frequencies
-            fn count_frequencies(freq_map: &HashMap<u32, usize>) -> HashMap<usize, usize> {
-                let mut count_map = HashMap::new();
-                for &count in freq_map.values() {
-                    *count_map.entry(count).or_insert(0) += 1;
-                }
-                count_map
-            }
-
-            // Count the distribution of frequencies for Rust and GPU results
-            let rust_freq_distribution = count_frequencies(&rust_freq_map);
-            let gpu_freq_distribution = count_frequencies(&gpu_freq_map);
-
-            // Print the distribution
-            log::debug!("Frequency | Rust Count | GPU Count");
-            log::debug!("------------------------------------");
-
-            // Collect all unique frequencies
-            let all_frequencies: HashSet<usize> = rust_freq_distribution.keys().cloned().collect::<HashSet<_>>()
-                .union(&gpu_freq_distribution.keys().cloned().collect::<HashSet<_>>())
-                .cloned()
-                .collect();
-
-            // Sort the frequencies for orderly printing
-            let mut sorted_frequencies: Vec<usize> = all_frequencies.into_iter().collect();
-            sorted_frequencies.sort_unstable();
-
-            // Print the counts for each frequency
-            for freq in sorted_frequencies {
-                let rust_count = rust_freq_distribution.get(&freq).cloned().unwrap_or(0);
-                let gpu_count = gpu_freq_distribution.get(&freq).cloned().unwrap_or(0);
-                println!("{:9} | {:10} | {:9}", freq, rust_count, gpu_count);
-            }
-        }
 
         log::debug!("Rust Result: {:?}", rust_buckets_indices.iter().sorted());
         log::debug!("GPU Result: {:?}", gpu_buckets_indices.iter().sorted());

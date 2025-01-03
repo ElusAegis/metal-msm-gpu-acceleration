@@ -1,4 +1,4 @@
-#[cfg(all(test, feature = "ark"))]
+#[cfg(feature = "ark")]
 mod tests {
     use crate::msm::metal::abstraction::{
         limbs_conversion::{FromLimbs, ToLimbs},

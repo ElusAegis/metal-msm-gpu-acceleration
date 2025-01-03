@@ -1,3 +1,4 @@
 pub mod abstraction;
 pub mod msm;
-pub mod tests;
+#[cfg(test)]
+pub(crate) mod tests;
