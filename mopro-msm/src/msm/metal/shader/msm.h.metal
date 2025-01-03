@@ -106,22 +106,19 @@ inline void compare_and_swap_x(threadgroup uint2 &a, threadgroup uint2 &b, bool 
     uint block_count = min(block_size, total_elems - block_start);
 
     // Step 1: LOAD from global memory into threadgroup memory
-    // Each thread loads an element if within range
-    if (tid < block_count) {
-        shared_data[tid] = data[block_start + tid];
-    }
 
     // If block_count < block_size, fill the remainder with a sentinel
     // if you want to handle partial blocks.
-    for (uint i = tid + threads_per_tg; i < block_size; i += threads_per_tg) {
+    for (uint i = tid; i < block_size; i += threads_per_tg) {
         if (i < block_count) {
             shared_data[i] = data[block_start + i];
         } else {
             // sentinel: set .x to 0xFFFFFFFF or so, if needed
             // or leave them as is if you can handle partial blocks.
-            shared_data[i] = uint2(0xFFFFFFFF, 0xFFFFFFFF);
+            shared_data[i] = uint2(-1, -1);
         }
     }
+
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // Step 2: Perform local sort or partial merges
@@ -133,25 +130,28 @@ inline void compare_and_swap_x(threadgroup uint2 &a, threadgroup uint2 &b, bool 
     // We'll do the standard bitonic sequence in shared memory up to 'block_size'.
     // If block_count < block_size, some data might be sentinel. It's still okay.
 
-    for (uint k = 2u; k <= block_size; k <<= 1) {
-        for (uint j = (k >> 1); j > 0; j >>= 1) {
-            uint ix = tid;
-            if (ix < block_size) {
-                uint partner = ix ^ j;
-                if (partner < block_size) {
-                    // ascending if (ix & k) == 0
-                    bool ascending = ((ix & k) == 0);
-                    compare_and_swap_x(shared_data[ix], shared_data[partner], ascending);
+    for (uint size = 2; size <= block_size; size <<= 1) {
+        for (uint stride = size >> 1; stride > 0; stride >>= 1) {
+
+            // Now loop i in steps of threads_per_tg, starting from tid
+            for (uint i = tid; i < block_size; i += threads_per_tg) {
+                uint partner = i ^ stride;
+                if (partner > i && partner < block_size) {
+                    bool ascending = ((i & size) == 0);
+                    compare_and_swap_x(shared_data[i], shared_data[partner], ascending);
                 }
             }
+
             threadgroup_barrier(mem_flags::mem_threadgroup);
         }
     }
 
     // Step 3: STORE back to global
     // Each thread writes if within block_count
-    if (tid < block_count) {
-        data[block_start + tid] = shared_data[tid];
+    for (uint i = tid; i < block_size; i += threads_per_tg) {
+        if (i < block_count) {
+            data[block_start + i] = shared_data[i];
+        }
     }
 }
 
