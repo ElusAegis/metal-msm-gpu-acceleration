@@ -1,4 +1,5 @@
 mod prepare_buckets_indices;
+mod sort_buckes;
 
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,7 @@ use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
 use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
+use crate::msm::metal::msm::sort_buckes::sort_buckets_indices;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -74,7 +76,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
 
     // TODO:
     let prepare_buckets_indices = state.setup_pipeline("prepare_buckets_indices").unwrap();
-    let sort_buckets = state.setup_pipeline("sort_buckets_indices_multi").unwrap();
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
     let sum_reduction = state.setup_pipeline("sum_reduction").unwrap();
 
@@ -85,7 +86,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
         state,
         pipelines: MetalMsmPipeline {
             prepare_buckets_indices,
-            sort_buckets,
             bucket_wise_accumulation,
             sum_reduction,
             final_accumulation,
@@ -201,101 +201,9 @@ pub fn exec_metal_commands<P: FromLimbs>(
     log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
 
 
-    {
-        let length = (params.instances_size * params.num_window) as usize;
-
-        let next_power_of_two = |x: u64| -> u64 {
-            let mut x = x;
-            x -= 1;
-            x |= x >> 1;
-            x |= x >> 2;
-            x |= x >> 4;
-            x |= x >> 8;
-            x |= x >> 16;
-            x |= x >> 32;
-            x += 1;
-            x
-        };
-
-        // For bitonic sort, we want length to be a power-of-two.
-        // If it's not, we can pad. For correctness, do so:
-        let padded_length = next_power_of_two(length as u64) as usize;
-
-        // Our chosen local block size:
-        //   - typically 1024 is a good block size on many GPUs.
-        let local_block_size = 1024;
-
-        // Step 1: local sort pass
-        // We'll dispatch enough threadgroups to cover (padded_length / local_block_size).
-        // For each threadgroup, 'block_size = local_block_size', sorting that chunk in local memory.
-
-        // We'll define a small buffer for 'block_size', 'stage', etc. repeatedly.
-        // We'll define a function to dispatch one pass:
-        let mut pass_number = 0;
-        let now = Instant::now();
-
-        // local function to dispatch one pass
-        let mut dispatch_pass = |block_size: u32| {
-            let total_elems = padded_length as u32;
-
-            // # of threadgroups
-            let num_threadgroups = (total_elems + block_size - 1) / block_size;
-            let mtl_threadgroups = MTLSize::new(num_threadgroups as u64, 1, 1);
-
-            // threads_per_group = block_size, or clamp if device can't handle that many threads in one group
-            let max_tg = config.pipelines.sort_buckets.max_total_threads_per_threadgroup();
-            let threads_per_group = block_size.min(max_tg as u32);
-
-            let mtl_threads_per_group = MTLSize::new(threads_per_group as u64, 1, 1);
-
-            // Alloc small buffers for total_elems, block_size, stage, substage
-            let total_elems_buf  = config.state.alloc_buffer_data(&[total_elems]);
-            let block_size_buf   = config.state.alloc_buffer_data(&[block_size]);
-            let stage_buf        = config.state.alloc_buffer_data(&[pass_number]);
-            let substage_buf     = config.state.alloc_buffer_data(&[0u32]);
-
-            let (command_buffer, command_encoder) = config.state.setup_command(
-                &config.pipelines.sort_buckets, // <--- The new pipeline
-                Some(&[
-                    (0, &data.buckets_indices_buffer), // device uint2 *data
-                    (1, &total_elems_buf),
-                    (2, &block_size_buf),
-                    (3, &stage_buf),
-                    (4, &substage_buf),
-                ]),
-            );
-
-            // We need threadgroup memory for 'block_size' * sizeof(uint2).
-            // block_size is up to 1024 typically, so 1024 * 8 = 8192 bytes
-            let shared_mem_size = (block_size as usize) * std::mem::size_of::<u32>() * 2; // 2 u32 per uint2
-            command_encoder.set_threadgroup_memory_length(0, shared_mem_size as u64);
-
-            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
-            command_encoder.end_encoding();
-
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-
-            pass_number += 1;
-        };
-
-        // --- PASS A) local sort sub-blocks of 1024 (or fewer if near end)
-        dispatch_pass(local_block_size);
-
-        // --- PASS B) Merging passes
-        // We double the sub-block size each pass until >= padded_length.
-        let mut size = local_block_size as usize;
-        while size < padded_length {
-            let new_size = size * 2;
-            dispatch_pass(new_size as u32);
-            size = new_size;
-        }
-
-        // Done. If original length < padded_length, the "extra" region is sorted sentinel elements,
-        // so your real data is still sorted in the first 'length' portion.
-
-        log::debug!("Sort buckets indices time: {:?}", now.elapsed());
-    }
+    let sort_time = Instant::now();
+    let sorted_indices = sort_buckets_indices(&config, &instance);
+    log::debug!("Sort buckets indices time: {:?}", sort_time.elapsed());
 
     {
         // 1. Calculate total bucket IDs
@@ -330,7 +238,7 @@ pub fn exec_metal_commands<P: FromLimbs>(
                     (0, &data.instances_size_buffer),     // _instances_size
                     (1, &data.num_windows_buffer),        // _num_windows
                     (2, &data.base_buffer),               // p_buff
-                    (3, &data.buckets_indices_buffer),    // buckets_indices
+                    (3, &sorted_indices),    // buckets_indices
                     (4, &data.buckets_matrix_buffer),     // buckets_matrix
                     (5, &actual_threads_buffer),          // _actual_threads
                     // If needed, also pass 'buckets_indices_len' if it differs from total_buckets
