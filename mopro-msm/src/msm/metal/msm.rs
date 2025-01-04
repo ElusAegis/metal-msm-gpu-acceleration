@@ -44,7 +44,8 @@ pub struct MetalMsmParams {
 
 pub struct MetalMsmPipeline {
     pub prepare_buckets_indices: ComputePipelineState,
-    pub sort_buckets: ComputePipelineState,
+    pub local_sort_buckets_indices: ComputePipelineState,
+    pub merge_sort_buckets_indices: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
     pub sum_reduction: ComputePipelineState,
     pub final_accumulation: ComputePipelineState,
@@ -76,7 +77,8 @@ pub fn setup_metal_state() -> MetalMsmConfig {
 
     // TODO:
     let prepare_buckets_indices = state.setup_pipeline("prepare_buckets_indices").unwrap();
-    let sort_buckets = state.setup_pipeline("sort_buckets_indices_multi").unwrap();
+    let local_sort_buckets_indices = state.setup_pipeline("local_sort_buckets_indices").unwrap();
+    let merge_sort_buckets_indices = state.setup_pipeline("merge_sort_buckets_indices").unwrap();
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
     let sum_reduction = state.setup_pipeline("sum_reduction").unwrap();
 
@@ -87,7 +89,8 @@ pub fn setup_metal_state() -> MetalMsmConfig {
         state,
         pipelines: MetalMsmPipeline {
             prepare_buckets_indices,
-            sort_buckets,
+            local_sort_buckets_indices,
+            merge_sort_buckets_indices,
             bucket_wise_accumulation,
             sum_reduction,
             final_accumulation,

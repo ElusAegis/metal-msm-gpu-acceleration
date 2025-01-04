@@ -70,7 +70,7 @@ inline void compare_and_swap_x(threadgroup uint2 &a, threadgroup uint2 &b, bool 
     }
 }
 
-[[kernel]] kernel void sort_buckets_indices_multi(
+[[kernel]] kernel void local_sort_buckets_indices(
     // The entire array of data to sort by .x ascending
     device uint2* data            [[ buffer(0) ]],
 
@@ -152,6 +152,189 @@ inline void compare_and_swap_x(threadgroup uint2 &a, threadgroup uint2 &b, bool 
         if (i < block_count) {
             data[block_start + i] = shared_data[i];
         }
+    }
+}
+
+/// Kernel to merge two sorted sub-blocks into a single sorted block using tile-based merging
+[[kernel]] void merge_sort_buckets_indices(
+    // The input buffer holding two sorted sub-blocks
+    device const uint2* buffer_in          [[ buffer(0) ]],
+    // The output buffer to write the merged results
+    device uint2*       buffer_out         [[ buffer(1) ]],
+
+    // Total number of (uint2) elements in the dataset
+    constant uint &total_elems             [[ buffer(2) ]],
+    // The size of each sorted sub-block we are merging
+    constant uint &curr_block_size         [[ buffer(3) ]],
+
+    // Shared memory used for partial merging
+    // We'll store up to tile_size items from A and B, and also a "temp" array
+    // so the total needed = tile_size * 2 `uint2`s = tile_size * 2 * 8 bytes
+    threadgroup uint2* shared_data         [[ threadgroup(0) ]],
+
+    // Standard thread / group identifiers
+    uint tid             [[ thread_index_in_threadgroup ]],
+    uint group_id        [[ threadgroup_position_in_grid ]],
+    uint threads_per_tg  [[ threads_per_threadgroup ]]
+)
+{
+    // Each threadgroup merges one pair of sub-blocks:
+    //   Sub-block A: [start, start + curr_block_size)
+    //   Sub-block B: [start + curr_block_size, start + 2*curr_block_size)
+    uint pair_id = group_id;
+    uint start   = pair_id * (curr_block_size * 2);
+
+    // If we exceed the total elements, nothing to merge
+    if (start >= total_elems) {
+        return;
+    }
+
+    // Actual number of elements in each sub-block, in case we are near the end
+    uint A_count = min(curr_block_size, total_elems - start);
+    uint B_count = 0;
+    if (A_count < curr_block_size) {
+        // means we are near the end
+        B_count = 0;
+    } else {
+        // sub-block B is directly after sub-block A
+        B_count = min(curr_block_size, total_elems - (start + A_count));
+    }
+
+    // We'll define a tile_size. Let's pick 256 for demonstration, but it must
+    // match your shared memory usage constraints. For testing, you used 4.
+    const uint tile_size = 4; // <= 2 * tile_size * 8 bytes must fit in shared memory
+
+    // We'll interpret:
+    //   the first tile_size positions in shared_data as "tileAB" for loaded input
+    //   the next tile_size positions in shared_data as "temp" for merged output
+    // so we need `2 * tile_size` in shared memory.
+
+    uint2 threadgroup* tileAB  = shared_data;              // tileAB[0..(tile_size-1)]
+    uint2 threadgroup* tileTmp = shared_data + tile_size;  // tileTmp[0..(tile_size-1)]
+
+    // We'll track positions in sub-block A (A_pos), sub-block B (B_pos),
+    // and where we place merged data in the global output (out_pos).
+    uint A_pos   = 0;
+    uint B_pos   = 0;
+    uint out_pos = 0;
+
+    // While we still have data in A or B
+    while (A_pos < A_count || B_pos < B_count) {
+        // For each "tile", load up to tile_size/2 from A, tile_size/2 from B
+        // ensuring we don't exceed sub-block sizes
+        uint loadA = min(tile_size / 2, A_count - A_pos);
+        uint loadB = min(tile_size / 2, B_count - B_pos);
+
+        // Load sub-block A slice into tileAB[0..(loadA-1)]
+        for (uint i = tid; i < loadA; i += threads_per_tg) {
+            tileAB[i] = buffer_in[start + A_pos + i];
+        }
+        // Fill remainder of left half with sentinel
+        for (uint i = loadA + tid; i < tile_size / 2; i += threads_per_tg) {
+            tileAB[i] = uint2(0xFFFFFFFF, 0xFFFFFFFF);
+        }
+
+        // Load sub-block B slice into tileAB[tile_size/2..(tile_size/2 + loadB -1)]
+        for (uint i = tid; i < loadB; i += threads_per_tg) {
+            tileAB[tile_size / 2 + i] = buffer_in[start + A_count + B_pos + i];
+        }
+        // Fill remainder of right half with sentinel
+        for (uint i = loadB + tid; i < tile_size / 2; i += threads_per_tg) {
+            tileAB[tile_size / 2 + i] = uint2(0xFFFFFFFF, 0xFFFFFFFF);
+        }
+
+        // Barrier to ensure tileAB is fully loaded
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Now do a direct 2-way merge in local memory:
+        // tileAB[0..(tile_size/2 -1)] sorted ascending, tileAB[tile_size/2..(tile_size -1)] sorted ascending
+        // We'll produce the merged result in tileTmp[0..(loadA+loadB -1)]
+
+        uint left_idx  = 0;
+        uint right_idx = tile_size / 2;
+        uint merge_end = loadA + loadB;  // how many valid items we loaded
+//        for (uint i = tid; i < merge_end; i += threads_per_tg) {
+//            // We'll do a normal "two-pointer" approach:
+//            // if left is not exhausted AND (right is exhausted OR left <= right):
+//            //   tileTmp[i] = tileAB[left_idx++]
+//            // else tileTmp[i] = tileAB[right_idx++]
+//        }
+
+        // We'll do that in a loop so each thread can handle multiple merges
+        uint i = tid;
+        // Do that a single thread with id = 0 does the merge sort fo the two tiles
+        if (tid == 0) {
+            while (i < merge_end) {
+                // Because each iteration merges exactly one element, we want a single pass approach
+                // Let's just do an atomic approach in each thread. We'll do a single pass with a loop:
+
+                // We'll define a local pass variable so we distribute merges across threads
+                // Actually, simpler is to do a single for i in [0..merge_end) with i += threads_per_tg.
+
+                // Pseudocode for each iteration:
+                //   if (left_idx < loadA && (right_idx >= tile_size || tileAB[left_idx].x <= tileAB[right_idx].x)) {
+                //       tileTmp[i] = tileAB[left_idx];
+                //       left_idx++;
+                //   } else {
+                //       tileTmp[i] = tileAB[right_idx];
+                //       right_idx++;
+                //   }
+
+                if (left_idx < loadA && (right_idx >= tile_size || tileAB[left_idx].x <= tileAB[right_idx].x)) {
+                    tileTmp[i] = tileAB[left_idx];
+                    left_idx++;
+                } else {
+                    tileTmp[i] = tileAB[right_idx];
+                    right_idx++;
+                }
+                i += 1;
+            }
+        }
+//        while (i < merge_end) {
+//            // Because each iteration merges exactly one element, we want a single pass approach
+//            // Let's just do an atomic approach in each thread. We'll do a single pass with a loop:
+//
+//            // We'll define a local pass variable so we distribute merges across threads
+//            // Actually, simpler is to do a single for i in [0..merge_end) with i += threads_per_tg.
+//
+//            // Pseudocode for each iteration:
+//            //   if (left_idx < loadA && (right_idx >= tile_size || tileAB[left_idx].x <= tileAB[right_idx].x)) {
+//            //       tileTmp[i] = tileAB[left_idx];
+//            //       left_idx++;
+//            //   } else {
+//            //       tileTmp[i] = tileAB[right_idx];
+//            //       right_idx++;
+//            //   }
+//
+//            if (left_idx < loadA && (right_idx >= tile_size || tileAB[left_idx].x <= tileAB[right_idx].x)) {
+//                tileTmp[i] = tileAB[left_idx];
+//                left_idx++;
+//            } else {
+//                tileTmp[i] = tileAB[right_idx];
+//                right_idx++;
+//            }
+//            i += threads_per_tg;
+//        }
+
+        // Barrier so that tileTmp is consistent
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Write tileTmp[0..to_write-1] to global buffer
+        uint to_write = loadA + loadB; // total merged in this tile
+//        uint remain   = (A_count + B_count) - out_pos;
+//        to_write = (to_write < remain) ? to_write : remain;
+
+        for (uint i2 = tid; i2 < to_write; i2 += threads_per_tg) {
+            buffer_out[start + out_pos + i2] = tileTmp[i2];
+        }
+
+        // Update positions
+        A_pos   += loadA;
+        B_pos   += loadB;
+        out_pos += to_write;
+
+        // Next tile...
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
