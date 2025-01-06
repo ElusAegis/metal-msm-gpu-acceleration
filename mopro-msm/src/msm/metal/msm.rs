@@ -113,7 +113,7 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
         if instances_size < 32 {
             3
          } else {
-            17 // TODO - learn how to calculate this
+            15 // TODO - learn how to calculate this
         }
     };
     let buckets_size = (1 << window_size) - 1;
@@ -213,48 +213,9 @@ pub fn exec_metal_commands<P: FromLimbs>(
     bucket_wise_accumulation(&config, &instance, &sorted_indices);
     log::debug!("Bucket wise accumulation time: {:?}", accumulation_time.elapsed());
 
-    {
-    // Number of windows = number of thread groups
-        let num_thread_groups = params.num_window as NSUInteger;
-
-        // Each thread group is responsible for one window.
-        // Tune this value as needed for performance.
-        let desired_point_additions_per_thread = 16;
-        let threads_per_group = ((1 << params.window_size as NSUInteger + desired_point_additions_per_thread - 1) / desired_point_additions_per_thread)
-            .min(config.pipelines.sum_reduction.max_total_threads_per_threadgroup());
-        log::debug!("(reduction) max thread per threadgroup: {:?}", config.pipelines.sum_reduction.max_total_threads_per_threadgroup());
-
-        log::debug!("(reduction) num thread groups: {:?}", num_thread_groups);
-        log::debug!("(reduction) threads per group: {:?}", threads_per_group);
-        log::debug!("(reduction) point additions per thread: {:?} (desired {desired_point_additions_per_thread})", (1 << params.window_size) / threads_per_group);
-
-        // Prepare Metal size structs
-        let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
-        let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
-
-        // We no longer need a buffer for 'max_thread_size'
-        let reduction_time = Instant::now();
-        autoreleasepool(|| {
-            let (command_buffer, command_encoder) = config.state.setup_command(
-                &config.pipelines.sum_reduction,
-                Some(&[
-                    (0, &data.window_size_buffer),  // c
-                    (1, &data.scalar_buffer),       // k_buff
-                    (2, &data.base_buffer),         // p_buff
-                    (3, &data.buckets_matrix_buffer),
-                    (4, &data.res_buffer),
-                    // No buffer(5) needed anymore
-                ]),
-            );
-
-            // Dispatch: one threadgroup per window, 'threads_per_group' threads in each group
-            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
-            command_encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-        });
-        log::debug!("Reduction time: {:?}", reduction_time.elapsed());
-    }
+    let reduction_time = Instant::now();
+    sum_reduction(&config, &instance);
+    log::debug!("Sum reduction time: {:?}", reduction_time.elapsed());
 
     {
         // Sequentially accumulate the msm results on GPU
