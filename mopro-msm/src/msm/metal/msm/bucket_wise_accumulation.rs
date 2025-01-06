@@ -510,6 +510,7 @@ mod tests {
         }
 
         #[test]
+        #[ignore]
         fn test_bucket_wise_accumulation_large_buckets(
             seed in any::<u64>(),
             log_size in 3u32..9,

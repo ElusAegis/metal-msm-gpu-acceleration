@@ -6,7 +6,6 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use halo2curves::group::{Curve};
 #[cfg(feature = "h2c")]
 use halo2curves::msm::msm_best;
-use instant::Instant;
 use rand::rngs::OsRng;
 use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
 #[cfg(feature = "h2c")]
