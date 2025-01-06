@@ -16,29 +16,67 @@ use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 /// # Returns
 ///
 /// * `()` - The function modifies the `buckets_indices_buffer` in-place.
-pub(crate) fn sort_buckets_indices(
+pub fn sort_buckets_indices(
     config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
-)-> Buffer {
-    let mut buckets_indices = MetalState::retrieve_contents::<u32>(&instance.data.buckets_indices_buffer);
+) {
+    // Retrieve the raw metal::Buffer
+    let buffer = &instance.data.buckets_indices_buffer;
 
-    // parse the buckets_indices to a Vec<(u32, u32)>
-    let mut buckets_indices_pairs: Vec<(u32, u32)> = Vec::new();
-    for i in 0..buckets_indices.len() / 2 {
-        buckets_indices_pairs.push((buckets_indices[2 * i], buckets_indices[2 * i + 1]));
+    // Cast its contents to *mut u32
+    let ptr = buffer.contents() as *mut u32;
+    // Calculate how many u32s we have in total
+    let total_u32s = buffer.length() as usize / size_of::<u32>();
+
+    // Interpret the slice as pairs of (u32, u32) or [u32; 2]
+    let pair_count = total_u32s / 2;
+    let pair_ptr = ptr as *mut [u32; 2];
+    let pair_slice = unsafe { std::slice::from_raw_parts_mut(pair_ptr, pair_count) };
+
+    // Sort in-place by the first element of each pair
+    pair_slice.par_sort_by_key(|pair| pair[0]);
+
+    // At this point, 'pair_slice' is sorted in place in GPU-shared memory.
+    // Hence, we can stop here.
+}
+
+
+/// Creates a MetalMsmInstance with the given (u32) data in the buckets_indices_buffer.
+/// This is a mock/truncated approach. Adjust as needed to fit your actual code.
+pub fn create_test_instance(
+    config: &mut MetalMsmConfig,
+    data: Vec<u32>,
+) -> MetalMsmInstance {
+    // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
+    use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
+
+    let length = data.len() / 2;
+    let buckets_indices_buffer = config.state.alloc_buffer_data(&data);
+
+    let instance_data = MetalMsmData {
+        window_size_buffer: config.state.alloc_buffer_data(&[0]),
+        instances_size_buffer: config.state.alloc_buffer_data(&[length as u32]),
+        window_starts_buffer: config.state.alloc_buffer_data(&[0]),
+        scalar_buffer: config.state.alloc_buffer::<u32>(0),
+        base_buffer: config.state.alloc_buffer::<u32>(0),
+        window_num_buffer: config.state.alloc_buffer_data(&[1u32]),
+        buckets_matrix_buffer: config.state.alloc_buffer::<u32>(0),
+        buckets_indices_buffer,
+        res_buffer: config.state.alloc_buffer::<u32>(0),
+        result_buffer: config.state.alloc_buffer::<u32>(0),
+    };
+
+    let instance_params = MetalMsmParams {
+        instances_size: length as u32,
+        buckets_size: 0,
+        window_size: 0,
+        window_num: 1,
+    };
+
+    MetalMsmInstance {
+        data: instance_data,
+        params: instance_params,
     }
-
-    // parallel sort the buckets_indices_pairs by the first element
-    buckets_indices_pairs.par_sort_by(|a, b| a.0.cmp(&b.0));
-
-    // flatten the sorted pairs to a Vec<u32>
-    buckets_indices.clear();
-    for (start, end) in buckets_indices_pairs {
-        buckets_indices.push(start);
-        buckets_indices.push(end);
-    }
-
-    config.state.alloc_buffer_data(&buckets_indices)
 }
 
 
@@ -60,7 +98,7 @@ mod tests {
         let sorted_buffer = sort_buckets_indices(config, instance);
 
         // Read results back from GPU
-        MetalState::retrieve_contents::<u32>(&sorted_buffer)
+        MetalState::retrieve_contents::<u32>(&instance.data.buckets_indices_buffer)
     }
 
     #[test]
@@ -163,44 +201,6 @@ mod tests {
             }
 
             log::debug!("GPU sort matches CPU sort for length {}", length);
-        }
-    }
-
-    /// Creates a MetalMsmInstance with the given (u32) data in the buckets_indices_buffer.
-    /// This is a mock/truncated approach. Adjust as needed to fit your actual code.
-    fn create_test_instance(
-        config: &mut MetalMsmConfig,
-        data: Vec<u32>,
-    ) -> MetalMsmInstance {
-        // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-        use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
-
-        let length = data.len() / 2;
-        let buckets_indices_buffer = config.state.alloc_buffer_data(&data);
-
-        let instance_data = MetalMsmData {
-            window_size_buffer: config.state.alloc_buffer_data(&[0]),
-            instances_size_buffer: config.state.alloc_buffer_data(&[length as u32]),
-            window_starts_buffer: config.state.alloc_buffer_data(&[0]),
-            scalar_buffer: config.state.alloc_buffer::<u32>(0),
-            base_buffer: config.state.alloc_buffer::<u32>(0),
-            window_num_buffer: config.state.alloc_buffer_data(&[1u32]),
-            buckets_matrix_buffer: config.state.alloc_buffer::<u32>(0),
-            buckets_indices_buffer,
-            res_buffer: config.state.alloc_buffer::<u32>(0),
-            result_buffer: config.state.alloc_buffer::<u32>(0),
-        };
-
-        let instance_params = MetalMsmParams {
-            instances_size: length as u32,
-            buckets_size: 0,
-            window_size: 0,
-            window_num: 1,
-        };
-
-        MetalMsmInstance {
-            data: instance_data,
-            params: instance_params,
         }
     }
 }

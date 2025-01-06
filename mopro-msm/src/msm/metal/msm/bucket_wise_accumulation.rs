@@ -31,7 +31,6 @@ use crate::msm::metal::abstraction::limbs_conversion::ark::ArkG;
 pub fn bucket_wise_accumulation(
     config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
-    sorted_indices_buffer: &metal::Buffer,
 ) {
     let data = &instance.data;
     let params = &instance.params;
@@ -85,7 +84,7 @@ pub fn bucket_wise_accumulation(
                 (0, &data.instances_size_buffer),     // _instances_size
                 (1, &data.window_num_buffer),        // _num_windows
                 (2, &data.base_buffer),               // p_buff
-                (3, sorted_indices_buffer),           // sorted (x,y)
+                (3, &data.buckets_indices_buffer),           // sorted (x,y)
                 (4, &data.buckets_matrix_buffer),     // output sums
                 (5, &actual_threads_buffer),          // _actual_threads
                 (6, &total_buckets_buffer),           // _total_buckets
@@ -126,7 +125,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use rayon::iter::IntoParallelRefIterator;
     use rayon::prelude::ParallelSliceMut;
-    use crate::msm::metal::msm::sort_buckes::sort_buckets_indices;
+    use crate::msm::metal::msm::sort_buckets::sort_buckets_indices;
     use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, ark::ArkG, ToLimbs};
     use crate::msm::metal::abstraction::limbs_conversion::ark::ArkGAffine;
     use crate::msm::metal::tests::init_logger;
@@ -138,9 +137,9 @@ mod tests {
     }
 
     /// We define a small GPU wrapper for testing
-    fn accumulate_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance, sorted_indices_buffer: &Buffer) -> Vec<ArkGAffine> {
+    fn accumulate_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance) -> Vec<ArkGAffine> {
         // Sort on the GPU
-        bucket_wise_accumulation(config, instance, sorted_indices_buffer);
+        bucket_wise_accumulation(config, instance);
 
         // Read results back from GPU
         let raw_limbs = MetalState::retrieve_contents::<u32>(&instance.data.buckets_matrix_buffer);
@@ -163,7 +162,7 @@ mod tests {
         config: &MetalMsmConfig,
         buckets_indices: &[(u32, u32)],
         points: &[ArkG],
-    ) -> (MetalMsmInstance, Buffer) {
+    ) -> MetalMsmInstance {
         // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
         use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
 
@@ -188,7 +187,6 @@ mod tests {
             total_bucket_amount, num_windows);
 
         let instance_size = points.len();
-        let sorted_buckets_indices_buffer = config.state.alloc_buffer_data(&buckets_indices);
 
         // Fill bases_limbs using write_u32_limbs in parallel
         let bases_limbs: Vec<u32> =  points
@@ -202,7 +200,7 @@ mod tests {
             scalar_buffer: config.state.alloc_buffer::<u32>(0),
             base_buffer: config.state.alloc_buffer_data(&bases_limbs),
             buckets_matrix_buffer: config.state.alloc_buffer::<u32>((total_bucket_amount * 8 * 3) as usize),
-            buckets_indices_buffer: config.state.alloc_buffer::<u32>(0),
+            buckets_indices_buffer: config.state.alloc_buffer_data(&buckets_indices),
             res_buffer: config.state.alloc_buffer::<u32>(0),
             result_buffer: config.state.alloc_buffer::<u32>(0),
         };
@@ -215,13 +213,11 @@ mod tests {
             window_num: num_windows as u32,
         };
 
-        (
-            MetalMsmInstance {
+
+        MetalMsmInstance {
             data: instance_data,
             params: instance_params,
-        },
-            sorted_buckets_indices_buffer
-        )
+        }
     }
 
     #[test]
@@ -423,14 +419,11 @@ mod tests {
             let points: Vec<ArkG> = (0..point_amount).map(|_| ArkG::rand(&mut rand)).collect();
 
             // Create test instance and sorted indices buffer
-            let (instance, sorted_indices_buffer) =
+            let instance =
                 create_test_instance(&config, &test_case.buckets_indices, &points);
 
-            // Perform GPU accumulation
-            bucket_wise_accumulation(&config, &instance, &sorted_indices_buffer);
-
             // Read the results from the GPU buffer (buckets_matrix)
-            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance, &sorted_indices_buffer);
+            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance);
 
             // Compute expected results using Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&test_case.buckets_indices, &points);
@@ -495,10 +488,10 @@ mod tests {
             buckets_indices.sort_by_key(|(b, _)| *b);
 
             let config = setup_metal_state();
-            let (instance, sorted_indices_buffer) = create_test_instance(&config, &buckets_indices, &points);
+            let instance = create_test_instance(&config, &buckets_indices, &points);
 
             // GPU
-            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance, &sorted_indices_buffer);
+            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance);
 
             // Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&buckets_indices, &points);
@@ -552,10 +545,10 @@ mod tests {
             buckets_indices.sort_by_key(|(b, _)| *b);
 
             let config = setup_metal_state();
-            let (instance, sorted_indices_buffer) = create_test_instance(&config, &buckets_indices, &points);
+            let instance = create_test_instance(&config, &buckets_indices, &points);
 
             // GPU
-            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance, &sorted_indices_buffer);
+            let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance);
 
             // Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&buckets_indices, &points);

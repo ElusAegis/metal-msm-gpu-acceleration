@@ -61,3 +61,7 @@ num-bigint = { version = "=0.4.3", default-features = false }
 [[bench]]
 name = "msm_benchmark"
 harness = false
+
+[[bench]]
+name = "sort_buckets_indices_benchmark"
+harness = false

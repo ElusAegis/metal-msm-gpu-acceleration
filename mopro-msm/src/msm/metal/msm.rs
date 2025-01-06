@@ -1,7 +1,7 @@
-mod prepare_buckets_indices;
-mod sort_buckes;
-mod bucket_wise_accumulation;
-mod sum_reduction;
+pub mod prepare_buckets_indices;
+pub mod sort_buckets;
+pub mod bucket_wise_accumulation;
+pub mod sum_reduction;
 
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
@@ -22,7 +22,7 @@ use rand::rngs::OsRng;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
 use crate::msm::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-use crate::msm::metal::msm::sort_buckes::sort_buckets_indices;
+use crate::msm::metal::msm::sort_buckets::sort_buckets_indices;
 use crate::msm::metal::msm::sum_reduction::sum_reduction;
 
 pub struct MetalMsmData {
@@ -206,11 +206,11 @@ pub fn exec_metal_commands<P: FromLimbs>(
 
 
     let sort_time = Instant::now();
-    let sorted_indices = sort_buckets_indices(&config, &instance);
+    sort_buckets_indices(&config, &instance);
     log::debug!("Sort buckets indices time: {:?}", sort_time.elapsed());
 
     let accumulation_time = Instant::now();
-    bucket_wise_accumulation(&config, &instance, &sorted_indices);
+    bucket_wise_accumulation(&config, &instance);
     log::debug!("Bucket wise accumulation time: {:?}", accumulation_time.elapsed());
 
     let reduction_time = Instant::now();
@@ -573,7 +573,7 @@ mod tests {
         });
     }
 
-    const LOG_INSTANCE_SIZE: u32 = 16;
+    const LOG_INSTANCE_SIZE: u32 = 18;
     const NUM_INSTANCE: u32 = 10;
     const BENCHMARKSPATH: &str = "benchmark_results";
 
