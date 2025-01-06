@@ -34,8 +34,6 @@ fn main() {
     let instances = get_or_create_msm_instances::<ArkG, ArkFr>(log_instance_size, NUM_INSTANCES, rng, None).unwrap();
     let affine_points = instances[0].points.iter().map(|p| p.into_affine()).collect::<Vec<_>>();
 
-    // Initialize Metal configuration
-    let mut metal_config = setup_metal_state();
 
     let start_execution = instant::Instant::now();
 
@@ -43,6 +41,9 @@ fn main() {
     for instance in instances {
         match run_mode.as_str() {
             "gpu" => {
+                // Initialize Metal configuration
+                let mut metal_config = setup_metal_state();
+
                 let _ = metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
             }
             "par_gpu" => {
