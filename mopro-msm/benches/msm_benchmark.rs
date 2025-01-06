@@ -30,18 +30,11 @@ pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
 
 fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmInstance<P, S>>) {
 
-    let metal_config_start = Instant::now();
     let mut metal_config = setup_metal_state();
-    log::debug!("Done setting up metal state in {:?}", metal_config_start.elapsed());
     for instance in instances {
-        let encoding_data_start = Instant::now();
         let metal_instance = encode_instances(&instance.points, &instance.scalars, &mut metal_config, None);
-        log::debug!("Done encoding data in {:?}", encoding_data_start.elapsed());
 
-
-        let msm_start = Instant::now();
         let _result: P = exec_metal_commands(&metal_config, metal_instance).unwrap();
-        log::debug!("Done msm in {:?}", msm_start.elapsed());
     }
 }
 
@@ -64,7 +57,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
 
     let rng = OsRng::default();
 
-    const LOG_INSTANCE_SIZE: u32 = 16;
+    const LOG_INSTANCE_SIZE: u32 = 20;
     const NUM_INSTANCES: u32 = 5;
 
     let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
@@ -97,11 +90,11 @@ fn benchmark_msm(criterion: &mut Criterion) {
         })
         .collect::<Vec<_>>();
 
-    // // Benchmark Halo2Curves CPU implementation
-    // #[cfg(feature = "h2c")]
-    // bench_group.bench_function("msm_h2c_cpu", |b| {
-    //     b.iter(|| msm_h2c_cpu(&instances_h2c))
-    // });
+    // Benchmark Halo2Curves CPU implementation
+    #[cfg(feature = "h2c")]
+    bench_group.bench_function("msm_h2c_cpu", |b| {
+        b.iter(|| msm_h2c_cpu(&instances_h2c))
+    });
 
     // Benchmark Arkworks CPU implementation
     bench_group.bench_function("msm_ark_cpu", |b| {
@@ -111,11 +104,8 @@ fn benchmark_msm(criterion: &mut Criterion) {
     // Benchmark GPU implementation
     bench_group.bench_function("msm_gpu", |b| b.iter(|| msm_gpu(&instances)));
 
-    // // Benchmark parallel GPU implementation
-    // bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, None)));
-
-    // // Benchmark all GPU implementation
-    // bench_group.bench_function("msm_all_gpu", |b| b.iter(|| msm_all_gpu(&instances, None, None)));
+    // Benchmark parallel GPU implementation
+    bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, None)));
 
     bench_group.finish();
 }
