@@ -1,5 +1,6 @@
 mod prepare_buckets_indices;
 mod sort_buckes;
+mod bucket_wise_accumulation;
 
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
@@ -18,6 +19,7 @@ use metal::*;
 use objc::rc::autoreleasepool;
 use rand::rngs::OsRng;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
+use crate::msm::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::msm::metal::msm::sort_buckes::sort_buckets_indices;
 
@@ -44,7 +46,6 @@ pub struct MetalMsmParams {
 
 pub struct MetalMsmPipeline {
     pub prepare_buckets_indices: ComputePipelineState,
-    pub sort_buckets: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
     pub sum_reduction: ComputePipelineState,
     pub final_accumulation: ComputePipelineState,
@@ -205,58 +206,9 @@ pub fn exec_metal_commands<P: FromLimbs>(
     let sorted_indices = sort_buckets_indices(&config, &instance);
     log::debug!("Sort buckets indices time: {:?}", sort_time.elapsed());
 
-    {
-        // 1. Calculate total bucket IDs
-        let total_buckets = params.buckets_size * params.num_window;
-
-        // 2. Limit maximum GPU threads (e.g., 2^17)
-        let max_gpu_threads = 2 << 17;
-        let actual_threads  = total_buckets.min(max_gpu_threads) as NSUInteger;
-
-        // 3. Threads per group
-        let threads_per_group = config
-            .pipelines
-            .bucket_wise_accumulation
-            .max_total_threads_per_threadgroup();
-
-        // 4. Number of threadgroups
-        let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;
-
-        // 5. Prepare MTLSize
-        let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
-        let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
-
-        // 6. Create small buffer for '_actual_threads'
-        let actual_threads_buffer = config.state.alloc_buffer_data(&[actual_threads]);
-
-        // 7. Dispatch GPU accumulation kernel
-        let bucket_wise_time = Instant::now();
-        autoreleasepool(|| {
-            let (command_buffer, command_encoder) = config.state.setup_command(
-                &config.pipelines.bucket_wise_accumulation,
-                Some(&[
-                    (0, &data.instances_size_buffer),     // _instances_size
-                    (1, &data.num_windows_buffer),        // _num_windows
-                    (2, &data.base_buffer),               // p_buff
-                    (3, &sorted_indices),    // buckets_indices
-                    (4, &data.buckets_matrix_buffer),     // buckets_matrix
-                    (5, &actual_threads_buffer),          // _actual_threads
-                    // If needed, also pass 'buckets_indices_len' if it differs from total_buckets
-                ]),
-            );
-
-            command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
-            command_encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-        });
-        let bucket_wise_elapsed = bucket_wise_time.elapsed();
-        log::debug!(
-            "Bucket-wise accumulation time (using {} threads, chunked): {:?}",
-            actual_threads,
-            bucket_wise_elapsed
-        );
-    }
+    let accumulation_time = Instant::now();
+    bucket_wise_accumulation(&config, &instance, &sorted_indices);
+    log::debug!("Bucket wise accumulation time: {:?}", accumulation_time.elapsed());
 
     {
     // Number of windows = number of thread groups

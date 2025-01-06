@@ -73,107 +73,244 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
 }
 
 [[kernel]] void bucket_wise_accumulation(
-    constant uint & _instances_size     [[ buffer(0) ]],
-    constant uint & _num_windows        [[ buffer(1) ]],
-    constant Point * p_buff             [[ buffer(2) ]],
-    device   uint2 * buckets_indices    [[ buffer(3) ]],
-    device   Point * buckets_matrix     [[ buffer(4) ]],
-    constant uint & _actual_threads     [[ buffer(5) ]],
+    // Buffers/Params
+    constant uint  & _instances_size      [[ buffer(0) ]],
+    constant uint  & _num_windows         [[ buffer(1) ]],
+    constant Point * p_buff               [[ buffer(2) ]],  // Array of all points
+    device const uint2 * buckets_indices  [[ buffer(3) ]],  // (x,y) sorted by x
+    device Point   * buckets_matrix       [[ buffer(4) ]],  // Output buckets
+    constant uint  & _actual_threads      [[ buffer(5) ]],
+    constant uint  & _total_buckets       [[ buffer(6) ]],
 
-    // Threadgroup storage for serialized partial sums
-    threadgroup SerBn254Point *shared_accumulators [[ threadgroup(0) ]],
+    // Shared memory for boundary accumulations
+    threadgroup PairAccum *sharedLeftAccum  [[ threadgroup(0) ]],
+    threadgroup PairAccum *sharedRightAccum [[ threadgroup(1) ]],
 
     // Threadgroup-related IDs
-    uint t_id             [[ thread_index_in_threadgroup ]],
-    uint group_id         [[ threadgroup_position_in_grid ]],
-    uint threads_per_tg   [[ threads_per_threadgroup ]]
+    uint t_id           [[ thread_index_in_threadgroup ]],
+    uint group_id       [[ threadgroup_position_in_grid ]],
+    uint threads_per_tg [[ threads_per_threadgroup ]]
 )
 {
-    // 1) total number of buckets
-    uint total_buckets = _instances_size * _num_windows;
-    if (total_buckets == 0) {
+    // -------------------------------------------------------------------------
+    // Step 0: Basic checks
+    // -------------------------------------------------------------------------
+    uint totalBuckets = _total_buckets;
+    if (totalBuckets == 0) {
+        return;
+    }
+    uint globalThreadId = group_id * threads_per_tg + t_id;
+
+    // total number of threadgroups
+    // (Since you already compute _actual_threads outside, we can do the typical formula:)
+    uint numThreadGroups = (_actual_threads + threads_per_tg - 1) / threads_per_tg;
+
+    // The length of the pairs array (sorted by x).
+    uint pairsLen = _instances_size * _num_windows;
+    // If pairsLen == 0, nothing to do
+    if (pairsLen == 0) {
         return;
     }
 
-    // 2) Our global thread ID
-    uint global_id = group_id * threads_per_tg + t_id;
-    if (global_id >= _actual_threads) {
-        // This thread does nothing
+    // -------------------------------------------------------------------------
+    // Step 1: Figure out which bucket-range belongs to this threadgroup
+    // -------------------------------------------------------------------------
+    // We'll compute how many buckets per group and get the range [bucketStart..bucketEnd).
+    uint bucketsPerGroup = (totalBuckets + numThreadGroups - 1) / numThreadGroups;  // ceil
+    uint bucketStart     = group_id * bucketsPerGroup;
+    uint bucketEnd       = min(bucketStart + bucketsPerGroup, totalBuckets);
+
+    if (bucketStart >= bucketEnd) {
+        // This group is assigned an empty slice of buckets
         return;
     }
 
-    // 3) Partition the [0..total_buckets) space among _actual_threads
-    uint chunk_size   = (total_buckets + _actual_threads - 1) / _actual_threads;
-    uint start_bucket = global_id * chunk_size;
-    uint end_bucket   = min(start_bucket + chunk_size, total_buckets);
-    if (start_bucket >= end_bucket) {
-        // No buckets to handle
+    // Next, we find in the `buckets_indices` array which segment corresponds
+    // to [bucketStart, bucketEnd). We'll get [pairsGroupStart, pairsGroupEnd).
+    uint pairsGroupStart = lower_bound_x(buckets_indices, pairsLen, bucketStart);
+    uint pairsGroupEnd   = lower_bound_x(buckets_indices, pairsLen, bucketEnd);
+
+    // If no pairs in this group range, bail
+    if (pairsGroupStart >= pairsGroupEnd) {
         return;
     }
 
-    // 4) If you need an explicit length for `buckets_indices`,
-    //    define or pass it. Often it’s just the length of the array.
-    uint indices_len = _instances_size * _num_windows; // or your actual list length
+    // The total number of pairs that this entire workgroup must handle:
+    uint pairsPerGroup = pairsGroupEnd - pairsGroupStart;
 
-    // 5) For each bucket in [start_bucket..end_bucket)
-    for (uint b = start_bucket; b < end_bucket; b++) {
-        // 5a) Find the subrange of `buckets_indices` for .x == b
-        uint i1 = lower_bound_x(buckets_indices, indices_len, b);
-        uint i2 = lower_bound_x(buckets_indices, indices_len, b + 1);
-        if (i1 >= i2) {
-            // No occurrences of this bucket ID
-            // But do barrier to keep group in sync for next bucket
-            threadgroup_barrier(mem_flags::mem_threadgroup);
-            continue;
-        }
+    // -------------------------------------------------------------------------
+    // Step 2: Each thread's sub-fragment
+    // -------------------------------------------------------------------------
+    // We'll distribute these `pairsPerGroup` among all threads in the group
+    uint pairsPerThread = (pairsPerGroup + threads_per_tg - 1) / threads_per_tg;  // ceil
+    uint fragmentStart  = pairsGroupStart + t_id * pairsPerThread;
+    uint fragmentEnd    = min(fragmentStart + pairsPerThread, pairsGroupEnd);
+    uint neededThreads  = (pairsPerGroup + pairsPerThread - 1) / pairsPerThread;
 
-        // 5b) Number of points that map to this bucket
-        uint count_for_bucket = i2 - i1;
+    if (t_id >= neededThreads) {
+        // This thread has no pairs to process
+        sharedLeftAccum[t_id].x  = 0;
+        sharedRightAccum[t_id].x = 0;
+        sharedLeftAccum[t_id].val  = toSerBn254Point(Point::neutral_element());
+        sharedRightAccum[t_id].val = toSerBn254Point(Point::neutral_element());
+        return;
+    }
 
-        // 5c) We want each thread to handle up to 100 additions
-        const uint chunk_per_thread = 100;
-        uint needed_threads = (count_for_bucket + chunk_per_thread - 1) / chunk_per_thread;
+    // -------------------------------------------------------------------------
+    // Step 3: Local accumulation of sub-fragment
+    // -------------------------------------------------------------------------
+    // We'll track partial sums for each distinct x.
+    // Keep track of the "first x" in this fragment and the "last x" in this fragment
+    // so we can handle boundary merges.
 
-        // 5d) This thread only does work if t_id < needed_threads
-        Point local_sum = Point::neutral_element();
-        if (t_id < needed_threads) {
-            // Determine this thread’s subrange in [i1..i2)
-            uint start_idx = i1 + t_id * chunk_per_thread;
-            uint end_idx   = min(start_idx + chunk_per_thread, i2);
+    // We'll store partial sums for the "first x" and "last x" in this fragment
+    // as we may need to merge with neighbors in the threadgroup.
+    // For now, set them to neutral.
+    PairAccum leftBoundary;
+    leftBoundary.x  = buckets_indices[fragmentStart].x;
+    leftBoundary.val = toSerBn254Point(Point::neutral_element());
 
-            // Accumulate partial sum
-            for (uint idx = start_idx; idx < end_idx; idx++) {
-                uint yIndex = buckets_indices[idx].y;
-                local_sum = local_sum + p_buff[yIndex];
+    PairAccum rightBoundary;
+    // Will be initialized later
+
+    // Start reading from the first pair in this fragment
+    uint2 initialPair = buckets_indices[fragmentStart];
+    uint currentX = initialPair.x;
+    Point localSum = p_buff[initialPair.y];
+
+    // Iterate over the pairs in [fragmentStart..fragmentEnd)
+    for (uint i = fragmentStart + 1; i < fragmentEnd; i++) {
+        uint2 pairXY = buckets_indices[i];
+        if (pairXY.x == currentX) {
+            // same bucket => accumulate
+            localSum += p_buff[pairXY.y];
+        } else {
+            // we've encountered a new bucket
+            if (currentX == initialPair.x) {
+                // This belongs to the left boundary (the first x in the fragment)
+                // We'll store partial sum in leftBoundary, possibly to merge later
+                leftBoundary.x  = currentX;
+                leftBoundary.val = toSerBn254Point(localSum);
+            } else {
+                // This is a bucket fully contained in our fragment
+                // so we can directly write it out to global memory,
+                // because no other thread is processing this same x.
+                buckets_matrix[currentX] = localSum;
             }
+            // Move on to the new x
+            currentX = pairXY.x;
+            localSum = p_buff[pairXY.y];
+        }
+    }
+
+    // After the loop ends, we have a partial sum for `currentX`.
+    rightBoundary.x   = currentX;
+    rightBoundary.val = toSerBn254Point(localSum);
+
+    // Save boundaries to shared memory
+    sharedLeftAccum[t_id]  = leftBoundary;
+    sharedRightAccum[t_id] = rightBoundary;
+
+    // -------------------------------------------------------------------------
+    // Step 4: Synchronize Before Intra-Threadgroup Boundary Reduction
+    // -------------------------------------------------------------------------
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+//    // FIXME - remove this
+//    uint placeholder = 1000000;
+//    if (t_id < 32) {
+//    buckets_matrix[group_id * 32 + t_id] = hide12ValuesIntoBN254Point(
+//        group_id, globalThreadId, t_id, neededThreads,
+//        pairsGroupStart, pairsGroupEnd, bucketStart, bucketEnd,
+//        pairsPerThread, pairsPerGroup, leftBoundary.x, rightBoundary.x);
+//        }
+//    return;
+
+    uint stride = 1;
+
+    while (stride < threads_per_tg) {
+
+        // Only threads whose ID satisfies the condition do merging
+        if ((t_id % (2 * stride)) == 0 && (t_id + stride) < neededThreads) {
+            uint leftIndex  = t_id;
+            uint rightIndex = t_id + stride;
+
+            // We have two pairs for each index:
+            //   sharedLeftAccum[i],  sharedRightAccum[i]
+            //   sharedLeftAccum[i+stride], sharedRightAccum[i+stride]
+            PairAccum leftLeft   = sharedLeftAccum[leftIndex];
+            PairAccum leftRight  = sharedRightAccum[leftIndex];
+            PairAccum rightLeft  = sharedLeftAccum[rightIndex];
+            PairAccum rightRight = sharedRightAccum[rightIndex];
+
+
+            // ---------------------------------------------------------------------
+            // 1) Depending on the relationships among these four boundaries,
+            //    write partial sums to global if they are fully resolved,
+            //    or merge into leftLeft / rightRight if needed.
+            // ---------------------------------------------------------------------
+            if (leftLeft.x != leftRight.x && rightRight.x != rightLeft.x) {
+                // If leftRight.x == rightLeft.x is a distinct boundary,
+                // we can immediately write to global
+                if (leftRight.x == rightLeft.x) {
+                    buckets_matrix[rightLeft.x] = fromSerBn254Point(leftRight.val) + fromSerBn254Point(rightLeft.val);
+                } else {
+                    buckets_matrix[leftRight.x] = fromSerBn254Point(leftRight.val);
+                    buckets_matrix[rightLeft.x] = fromSerBn254Point(rightLeft.val);
+                }
+            } else if (leftLeft.x == rightLeft.x) {
+                // We have a boundary collision (same bucket) that might also coincide
+                // with leftLeft.x or rightRight.x. If so, we merge them.
+                leftLeft.val = toSerBn254Point(fromSerBn254Point(leftLeft.val) + fromSerBn254Point(leftRight.val) + fromSerBn254Point(rightLeft.val));
+            } else if (rightRight.x == leftRight.x) {
+                 rightRight.val = toSerBn254Point(fromSerBn254Point(rightRight.val) + fromSerBn254Point(rightLeft.val) + fromSerBn254Point(leftRight.val));
+            } else {
+                // If the right-left boundary differs from left-right boundary
+                // and neither merges with the other, we can write both out separately.
+                if (leftLeft.x != leftRight.x) {
+                    buckets_matrix[leftRight.x] = fromSerBn254Point(leftRight.val);
+                } else {
+                    leftLeft.val = toSerBn254Point(fromSerBn254Point(leftLeft.val) + fromSerBn254Point(leftRight.val));
+                }
+                if (rightRight.x != rightLeft.x) {
+                    buckets_matrix[rightLeft.x] = fromSerBn254Point(rightLeft.val);
+                } else {
+                    rightRight.val = toSerBn254Point(fromSerBn254Point(rightRight.val) + fromSerBn254Point(rightLeft.val));
+                }
+            }
+
+            // ---------------------------------------------------------------------
+            // Finally, store updated results back into shared memory
+            // so subsequent steps can see them. We only need to update left side.
+            // ---------------------------------------------------------------------
+            sharedLeftAccum[leftIndex]  = leftLeft;
+            sharedRightAccum[leftIndex] = rightRight;
+
+
+
         }
 
-        // 5e) Serialize the local sum and store in threadgroup memory
-        shared_accumulators[t_id] = toSerBn254Point(local_sum);
+        // Synchronize after each reduction step
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // 5f) Parallel reduction among the first `needed_threads` threads
-        uint reduce_count = (needed_threads < threads_per_tg)
-                            ? needed_threads
-                            : threads_per_tg;
+        stride *= 2;
+    }
 
-        for (uint offset = reduce_count >> 1; offset > 0; offset >>= 1) {
-            if (t_id < offset) {
-                Point p1 = fromSerBn254Point(shared_accumulators[t_id]);
-                Point p2 = fromSerBn254Point(shared_accumulators[t_id + offset]);
-                shared_accumulators[t_id] = toSerBn254Point(p1 + p2);
-            }
-            threadgroup_barrier(mem_flags::mem_threadgroup);
+    // -----------------------------------------------------------------------------
+    // Step 7: Final Write from Reduced Accumulators
+    // (Same as pseudocode: only thread 0 merges the final leftover pair, if needed.)
+    // -----------------------------------------------------------------------------
+    if (t_id == 0) {
+        PairAccum leftFinal  = sharedLeftAccum[t_id];
+        PairAccum rightFinal = sharedRightAccum[t_id];
+
+        if (leftFinal.x == rightFinal.x) {
+            // Same bucket => merge them
+            buckets_matrix[leftFinal.x] = fromSerBn254Point(leftFinal.val) + fromSerBn254Point(rightFinal.val);
+        } else {
+            buckets_matrix[leftFinal.x] = fromSerBn254Point(leftFinal.val);
+            buckets_matrix[rightFinal.x] = fromSerBn254Point(rightFinal.val);
         }
-
-        // 5g) Thread 0 updates buckets_matrix[b]
-        if (t_id == 0) {
-            Point final_val = fromSerBn254Point(shared_accumulators[0]);
-            buckets_matrix[b] = final_val;
-        }
-
-        // 5h) Barrier before next bucket iteration
-        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 }
 
