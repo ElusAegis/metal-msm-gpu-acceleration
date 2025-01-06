@@ -38,7 +38,8 @@ pub fn bucket_wise_accumulation(
     }
 
     // For safety, clamp the max GPU threads
-    let actual_threads = total_buckets;
+    let desired_pairs_per_thread = 128;
+    let actual_threads = ((params.instances_size * params.window_num) as u64 + desired_pairs_per_thread - 1) / desired_pairs_per_thread;
     // Or choose some other logic if you'd prefer a smaller # of threads
 
     // Threads per group
