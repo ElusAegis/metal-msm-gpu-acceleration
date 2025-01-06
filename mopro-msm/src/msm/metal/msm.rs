@@ -12,12 +12,12 @@ use crate::msm::metal::abstraction::{
 };
 use ark_std::{vec::Vec};
 // For benchmarking
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use crate::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
 use crate::msm::utils::preprocess::MsmInstance;
 use metal::*;
 use objc::rc::autoreleasepool;
-use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, IntoParallelRefIterator, IndexedParallelIterator};
+use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelRefIterator, IndexedParallelIterator, IntoParallelIterator};
 use crate::msm::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::msm::metal::msm::sort_buckets::sort_buckets_indices;
@@ -255,87 +255,35 @@ where
     let points = &instance.points;
     let scalars = &instance.scalars;
 
+    // Shared accumulators
+    let accumulator = Arc::new(Mutex::new(P::from_u32_limbs(&[0; 24])));
+
+
     // We believe optimal chunk size is 1/3 of the target MSM length
     let chunk_size = if let Some(target_msm_log_size) = target_msm_log_size {
         2usize.pow(target_msm_log_size as u32)
     } else {
-        points.len() / 3
+        points.len() / 2
     };
+    let amount_of_sub_instances = (points.len() + chunk_size - 1) / chunk_size;
 
-    // Shared accumulators
-    let accumulator = Arc::new(Mutex::new(P::from_u32_limbs(&[0; 24])));
-    let metal_state_time = Arc::new(Mutex::new(Duration::ZERO));
-    let encoding_time = Arc::new(Mutex::new(Duration::ZERO));
-    let exec_time = Arc::new(Mutex::new(Duration::ZERO));
-    let sleep_time = Arc::new(Mutex::new(Duration::ZERO));
+    (0..amount_of_sub_instances).into_par_iter().for_each(|i| {
+        let start = i * chunk_size;
+        let end = ark_std::cmp::min((i + 1) * chunk_size, points.len());
 
-    points
-        .chunks(chunk_size)
-        .zip(scalars.chunks(chunk_size))
-        .enumerate() // Add index for delay
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .for_each(|(i, (pts_chunk, scs_chunk))| {
-            // Introduce delay based on chunk index
-            let sleep_start = instant::Instant::now();
-            // std::thread::sleep(Duration::from_millis(i as u64 * 150));
-            let sleep_elapsed = sleep_start.elapsed();
-            {
-                let mut sleep_time = sleep_time.lock().unwrap();
-                *sleep_time += sleep_elapsed;
-            }
-            // Measure time for setting up metal state
-            let metal_config_start = instant::Instant::now();
-            let mut metal_config = setup_metal_state();
-            let metal_state_elapsed = metal_config_start.elapsed();
-            {
-                let mut state_time = metal_state_time.lock().unwrap();
-                *state_time += metal_state_elapsed;
-            }
-            log::debug!("Done setting up metal state in {:?}", metal_state_elapsed);
+        let sub_points = &points[start..end];
+        let sub_scalars = &scalars[start..end];
 
-            // Measure time for encoding instances
-            let encoding_start = instant::Instant::now();
-            let metal_instance = encode_instances(pts_chunk, scs_chunk, &mut metal_config, None);
-            let encoding_elapsed = encoding_start.elapsed();
-            {
-                let mut enc_time = encoding_time.lock().unwrap();
-                *enc_time += encoding_elapsed;
-            }
+        let mut config = setup_metal_state();
+        let sub_instance = encode_instances(sub_points, sub_scalars, &mut config, None);
 
-            // Measure time for executing commands
-            let exec_start = instant::Instant::now();
-            let partial_result = exec_metal_commands(&metal_config, metal_instance).unwrap();
-            let exec_elapsed = exec_start.elapsed();
-            {
-                let mut ex_time = exec_time.lock().unwrap();
-                *ex_time += exec_elapsed;
-            }
+        let partial_result = exec_metal_commands(&config, sub_instance).unwrap();
 
-            // Add partial result to the shared accumulator
-            let mut acc = accumulator.lock().unwrap();
-            *acc = acc.clone() + partial_result;
+        let mut accumulator = accumulator.lock().unwrap();
+        // Add partial result to the shared accumulator
+        *accumulator = accumulator.clone().add(partial_result);
+    });
 
-            log::info!("Finished compute thread {i}");
-        });
-
-    // Log aggregated times
-    log::info!(
-        "Total time spent on metal state setup: {:?}",
-        *metal_state_time.lock().unwrap()
-    );
-    log::info!(
-        "Total time spent on encoding instances: {:?}",
-        *encoding_time.lock().unwrap()
-    );
-    log::info!(
-        "Total time spent on executing commands: {:?}",
-        *exec_time.lock().unwrap()
-    );
-    log::info!(
-        "Total time spent on sleeping : {:?}",
-        *sleep_time.lock().unwrap()
-    );
 
     // Extract the final accumulated result
     Arc::try_unwrap(accumulator)
