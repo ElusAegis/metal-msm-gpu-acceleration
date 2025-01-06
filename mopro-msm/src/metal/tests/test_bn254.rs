@@ -1,6 +1,6 @@
 #[cfg(feature = "ark")]
 mod tests {
-    use crate::msm::metal::abstraction::{
+    use crate::metal::abstraction::{
         limbs_conversion::{FromLimbs, ToLimbs},
         state::MetalState,
     };

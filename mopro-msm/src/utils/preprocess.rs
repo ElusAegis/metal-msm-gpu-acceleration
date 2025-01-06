@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, PointGPU, ScalarGPU, ToLimbs};
+use crate::metal::abstraction::limbs_conversion::{FromLimbs, PointGPU, ScalarGPU, ToLimbs};
 
 #[derive(Debug, Error)]
 pub enum HarnessError {
@@ -225,7 +225,7 @@ fn default_msm_vec_repo() -> PathBuf {
 #[cfg(all(test, feature = "ark"))]
 mod tests {
     use super::*;
-    use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+    use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
     use ark_std::rand::thread_rng;
     use std::fs;
 

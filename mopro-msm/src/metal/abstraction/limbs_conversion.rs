@@ -284,9 +284,9 @@ mod test {
     use proptest::prelude::ProptestConfig;
     use rand::prelude::StdRng;
     use rand::SeedableRng;
-    use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
+    use crate::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
     #[cfg(feature = "h2c")]
-    use crate::msm::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
+    use crate::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
     use super::{FromLimbs, ToLimbs};
 
     #[cfg(feature = "h2c")]

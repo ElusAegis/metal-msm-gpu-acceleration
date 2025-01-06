@@ -50,12 +50,12 @@ mod test {
     use proptest::{prop_assert_eq, prop_assume, proptest};
     use rand::prelude::StdRng;
     use rand::SeedableRng;
-    use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-    use crate::msm::metal::abstraction::limbs_conversion::ScalarGPU;
-    use crate::msm::metal::abstraction::state::MetalState;
-    use crate::msm::metal::msm::{encode_instances, setup_metal_state};
-    use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-    use crate::msm::metal::tests::init_logger;
+    use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+    use crate::metal::abstraction::limbs_conversion::ScalarGPU;
+    use crate::metal::abstraction::state::MetalState;
+    use crate::metal::msm::{encode_instances, setup_metal_state};
+    use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
+    use crate::metal::tests::init_logger;
 
     // Helper function to get a scalar fragment
     // This function copies the logic from the Metal shader UnsignedInteger right shift

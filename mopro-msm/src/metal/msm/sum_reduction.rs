@@ -8,7 +8,7 @@
 
 use metal::{MTLSize};
 use objc::rc::autoreleasepool;
-use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 /// Dispatches the `sum_reduction` Metal shader kernel.
 ///
@@ -101,11 +101,11 @@ mod tests {
     use proptest::{prop_assert_eq, proptest};
     use rand::SeedableRng;
     use super::*;
-    use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
-    use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, ToLimbs};
-    use crate::msm::metal::abstraction::state::MetalState;
-    use crate::msm::metal::msm::setup_metal_state;
-    use crate::msm::metal::tests::init_logger;
+    use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
+    use crate::metal::abstraction::limbs_conversion::{FromLimbs, ToLimbs};
+    use crate::metal::abstraction::state::MetalState;
+    use crate::metal::msm::setup_metal_state;
+    use crate::metal::tests::init_logger;
 
     fn reduce_on_gpu(
         config: &MetalMsmConfig,
@@ -125,7 +125,7 @@ mod tests {
         window_num: usize,
     ) -> MetalMsmInstance {
         // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-        use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
+        use crate::metal::msm::{MetalMsmParams, MetalMsmData};
 
         // Make sure that the buckets_matrix length is a multiple of the number of windows
         assert_eq!(buckets_matrix.len() % window_num, 0,

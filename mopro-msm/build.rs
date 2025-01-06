@@ -1,7 +1,7 @@
 use std::{env, path::Path, process::Command};
 use walkdir::WalkDir;
 
-const METAL_SHADER_DIR: &str = "src/msm/metal/shader/";
+const METAL_SHADER_DIR: &str = "src/metal/shader/";
 
 fn main() {
     compile_shaders();

@@ -1,5 +1,5 @@
 use rayon::prelude::ParallelSliceMut;
-use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 /// Executes the `sort_buckets` Metal shader kernel.
 /// Sorts the `(uint2)` data in `buckets_indices_buffer` by `.x` ascending.
@@ -44,7 +44,7 @@ pub fn create_test_instance(
     data: Vec<u32>,
 ) -> MetalMsmInstance {
     // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-    use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
+    use crate::metal::msm::{MetalMsmParams, MetalMsmData};
 
     let length = data.len() / 2;
     let buckets_indices_buffer = config.state.alloc_buffer_data(&data);
@@ -79,12 +79,12 @@ pub fn create_test_instance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msm::metal::msm::setup_metal_state;
+    use crate::metal::msm::setup_metal_state;
     use std::collections::HashSet;
     use proptest::prelude::*;
     use rand::SeedableRng;
-    use crate::msm::metal::abstraction::state::MetalState;
-    use crate::msm::metal::tests::init_logger;
+    use crate::metal::abstraction::state::MetalState;
+    use crate::metal::tests::init_logger;
 
     /// We define a small GPU wrapper for testing
     fn sort_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance) -> Vec<u32> {

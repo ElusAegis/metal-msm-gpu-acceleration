@@ -6,7 +6,7 @@
 
 use metal::MTLSize;
 use objc::rc::autoreleasepool;
-use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 /// Dispatches the `bucket_wise_accumulation` Metal shader kernel.
 /// This kernel reads:
@@ -113,15 +113,15 @@ pub fn bucket_wise_accumulation(
 mod tests {
     use std::ops::Add;
     use super::*;
-    use crate::msm::metal::msm::{setup_metal_state, MetalMsmConfig, MetalMsmInstance};
+    use crate::metal::msm::{setup_metal_state, MetalMsmConfig, MetalMsmInstance};
     use ark_ec::CurveGroup;
     use ark_std::UniformRand;
     use proptest::prelude::*;
     use rand::{Rng, SeedableRng};
-    use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, ark::ArkG, ToLimbs};
-    use crate::msm::metal::abstraction::limbs_conversion::ark::ArkGAffine;
-    use crate::msm::metal::abstraction::state::MetalState;
-    use crate::msm::metal::tests::init_logger;
+    use crate::metal::abstraction::limbs_conversion::{FromLimbs, ark::ArkG, ToLimbs};
+    use crate::metal::abstraction::limbs_conversion::ark::ArkGAffine;
+    use crate::metal::abstraction::state::MetalState;
+    use crate::metal::tests::init_logger;
 
     /// Struct to hold individual test case data
     struct BucketAccumTestCase {
@@ -157,7 +157,7 @@ mod tests {
         points: &[ArkG],
     ) -> MetalMsmInstance {
         // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-        use crate::msm::metal::msm::{MetalMsmParams, MetalMsmData};
+        use crate::metal::msm::{MetalMsmParams, MetalMsmData};
 
         // Make sure that the buckets_indices are sorted by bucket index
         let mut buckets_indices = buckets_indices.to_vec();

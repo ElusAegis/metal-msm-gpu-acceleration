@@ -1,6 +1,6 @@
 use metal::{ComputeCommandEncoderRef, MTLResourceOptions};
 
-use crate::msm::metal::abstraction::errors::MetalError;
+use crate::metal::abstraction::errors::MetalError;
 
 use core::{ffi, mem};
 use std::{env, fs, path::Path};

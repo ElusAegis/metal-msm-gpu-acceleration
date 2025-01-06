@@ -7,12 +7,12 @@ use halo2curves::group::{Curve};
 #[cfg(feature = "h2c")]
 use halo2curves::msm::msm_best;
 use rand::rngs::OsRng;
-use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
+use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
 #[cfg(feature = "h2c")]
-use mopro_msm::msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
-use mopro_msm::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
-use mopro_msm::msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
+use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
+use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
+use mopro_msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
+use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 
 #[cfg(feature = "h2c")]
 pub fn msm_h2c_cpu(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {

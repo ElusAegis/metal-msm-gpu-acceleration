@@ -5,7 +5,7 @@ pub mod sum_reduction;
 
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
-use crate::msm::metal::abstraction::{
+use crate::metal::abstraction::{
     errors::MetalError,
     limbs_conversion::{FromLimbs},
     state::*,
@@ -13,15 +13,15 @@ use crate::msm::metal::abstraction::{
 use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::Instant;
-use crate::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use crate::msm::utils::preprocess::MsmInstance;
+use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
+use crate::utils::preprocess::MsmInstance;
 use metal::*;
 use objc::rc::autoreleasepool;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelRefIterator, IndexedParallelIterator, IntoParallelIterator};
-use crate::msm::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
-use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-use crate::msm::metal::msm::sort_buckets::sort_buckets_indices;
-use crate::msm::metal::msm::sum_reduction::sum_reduction;
+use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
+use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
+use crate::metal::msm::sort_buckets::sort_buckets_indices;
+use crate::metal::msm::sum_reduction::sum_reduction;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -293,6 +293,15 @@ where
         .unwrap()
 }
 
+pub fn best_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
+    points: &[P],
+    scalars: &[S],
+) -> Result<P, MetalError> {
+    let mut config = setup_metal_state();
+    let instance = encode_instances(points, scalars, &mut config, None);
+    exec_metal_commands(&config, instance)
+}
+
 #[cfg(test)]
 mod tests {
     const LOG_INSTANCE_SIZE: u32 = 18;
@@ -303,11 +312,11 @@ mod tests {
         use ark_ec::{CurveGroup, VariableBaseMSM};
         use ark_std::cfg_into_iter;
         use rand::rngs::OsRng;
-        use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-        use crate::msm::metal::msm::{metal_msm, metal_msm_parallel, setup_metal_state};
-        use crate::msm::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
-        use crate::msm::metal::tests::init_logger;
-        use crate::msm::utils::preprocess::{get_or_create_msm_instances};
+        use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+        use crate::metal::msm::{metal_msm, metal_msm_parallel, setup_metal_state};
+        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::metal::tests::init_logger;
+        use crate::utils::preprocess::{get_or_create_msm_instances};
 
         #[test]
         fn test_msm_correctness_medium_sample_ark() {
@@ -371,11 +380,11 @@ mod tests {
         use ark_std::cfg_into_iter;
         use halo2curves::group::Curve;
         use rand::rngs::OsRng;
-        use crate::msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2G};
-        use crate::msm::metal::msm::{metal_msm, setup_metal_state};
-        use crate::msm::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
-        use crate::msm::metal::tests::init_logger;
-        use crate::msm::utils::preprocess::get_or_create_msm_instances;
+        use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2G};
+        use crate::metal::msm::{metal_msm, setup_metal_state};
+        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::metal::tests::init_logger;
+        use crate::utils::preprocess::get_or_create_msm_instances;
 
         #[test]
         fn test_msm_correctness_medium_sample_h2c() {

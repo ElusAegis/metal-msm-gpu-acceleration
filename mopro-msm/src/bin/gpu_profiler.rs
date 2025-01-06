@@ -1,9 +1,9 @@
 use std::env;
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use rand::rngs::OsRng;
-use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-use mopro_msm::msm::metal::msm::{metal_msm_parallel, setup_metal_state, metal_msm};
-use mopro_msm::msm::utils::preprocess::get_or_create_msm_instances;
+use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+use mopro_msm::metal::msm::{metal_msm_parallel, setup_metal_state, metal_msm};
+use mopro_msm::utils::preprocess::get_or_create_msm_instances;
 
 fn main() {
     // Setup logger
