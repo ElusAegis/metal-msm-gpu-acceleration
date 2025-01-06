@@ -371,11 +371,7 @@ mod tests {
                 objc::rc::autoreleasepool(|| {
                     result = execute_kernel("bn254_add", &p, &q);
                 });
-                let gpu_result = G::new(
-                    Fq::from_u32_limbs(&result[0..8]),
-                    Fq::from_u32_limbs(&result[8..16]),
-                    Fq::from_u32_limbs(&result[16..24]),
-                );
+                let gpu_result = G::from_u32_limbs(&result);
                 let cpu_result = p + q;
                 prop_assert_eq!(gpu_result, cpu_result);
             }
