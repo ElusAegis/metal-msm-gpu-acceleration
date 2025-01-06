@@ -51,9 +51,6 @@ pub struct MetalMsmPipeline {
     pub bucket_wise_accumulation: ComputePipelineState,
     pub sum_reduction: ComputePipelineState,
     pub final_accumulation: ComputePipelineState,
-
-    // New one-shot kernel:
-    pub msm_all_gpu: ComputePipelineState,
 }
 
 pub struct MetalMsmConfig {
@@ -82,9 +79,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
     let sum_reduction = state.setup_pipeline("sum_reduction").unwrap();
 
-    // Our new kernel:
-    let msm_all_gpu = state.setup_pipeline("msm_all_gpu").unwrap();
-
     MetalMsmConfig {
         state,
         pipelines: MetalMsmPipeline {
@@ -92,7 +86,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
             bucket_wise_accumulation,
             sum_reduction,
             final_accumulation,
-            msm_all_gpu,
         },
     }
 }
@@ -244,140 +237,6 @@ pub fn exec_metal_commands<P: FromLimbs>(
     };
 
     Ok(msm_result)
-}
-
-/// One-shot GPU-based MSM using the `msm_all_gpu` kernel.
-///
-/// - `P` is the GPU-friendly point type (e.g., BN254),
-/// - `S` is the GPU-friendly scalar type (e.g., BN254 scalar).
-///
-pub fn metal_msm_all_gpu<P, S>(
-    points: &[P],
-    scalars: &[S],
-    config: &mut MetalMsmConfig,
-    batch_size: Option<u32>,
-    threads_per_tg: Option<u32>,
-) -> Result<P, MetalError>
-where
-    P: PointGPU<24> + FromLimbs + Add<P, Output = P>,
-    S: ScalarGPU<8>,
-{
-    // -----------------------------------------------------------------------
-    // 1. Flatten points and scalars into u32-limb buffers
-    // -----------------------------------------------------------------------
-    let n = points.len().min(scalars.len());
-    let scalars_limbs: Vec<u32> = scalars
-        .iter()
-        .take(n)
-        .flat_map(|s| s.to_u32_limbs())
-        .collect();
-
-    let points_limbs: Vec<u32> = points
-        .iter()
-        .take(n)
-        .flat_map(|p| p.to_u32_limbs())
-        .collect();
-
-    // Number of threads per threadgroup
-    // The partial result for each threadgroup will be 96 bytes => 24 u32
-    // This is calculated based on max threadgroup shared memory size: ~ 32 KB / 96 bytes (size of a Point)
-    const MAX_MAX_THREADS_PER_TG: u32 = 340;
-    let threads_per_tg: u32 = if let Some(threads_per_tg) = threads_per_tg {
-        if threads_per_tg <= MAX_MAX_THREADS_PER_TG {
-            threads_per_tg
-        } else {
-            log::warn!(
-                "threads_per_tg ({}) exceeds the maximum allowed value ({}). Using {} instead.",
-                threads_per_tg,
-                MAX_MAX_THREADS_PER_TG,
-                MAX_MAX_THREADS_PER_TG
-            );
-            MAX_MAX_THREADS_PER_TG
-        }
-    } else {
-        340
-    };
-
-    let batch_size: u32 = if let Some(batch_size) = batch_size {
-        batch_size
-    } else {
-        ((points.len() as u32) / 16).div_ceil(threads_per_tg)
-    };
-
-    // chunk_size = threads_per_tg * batch_size
-    let chunk_size = (threads_per_tg as u32) * batch_size;
-
-    // number of threadgroups needed
-    let num_tg = (n as u32 + chunk_size - 1) / chunk_size;
-
-    log::debug!("Thread Configuration Information:");
-    log::debug!("  - threads_per_tg: {}", threads_per_tg);
-    log::debug!("  - batch_size (MSM per thread): {}", batch_size);
-    log::debug!("  - chunk_size (MSM per thread group): {}", chunk_size);
-    log::debug!("  - num_tg (total thread groups): {}", num_tg);
-
-    // -----------------------------------------------------------------------
-    // 2. Allocate GPU buffers
-    // -----------------------------------------------------------------------
-    let scalar_buffer = config.state.alloc_buffer_data(&scalars_limbs);
-    let point_buffer = config.state.alloc_buffer_data(&points_limbs);
-
-    // partial_results_buffer: store one partial sum (24 u32) per threadgroup
-    let partial_results_buffer = config
-        .state
-        .alloc_buffer::<u32>((num_tg as usize) * 24 /* 96 bytes => 24 u32 */);
-
-    // pass the total size (n) to the kernel
-    let total_size_buffer = config.state.alloc_buffer_data(&[n as u32]);
-
-    // pass the batch size to the kernel
-    let batch_size_buffer = config.state.alloc_buffer_data(&[batch_size as u32]);
-
-    // -----------------------------------------------------------------------
-    // 3. Encode the `msm_all_gpu` kernel dispatch
-    // -----------------------------------------------------------------------
-    let start = Instant::now();
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.msm_all_gpu,
-            Some(&[
-                (0, &point_buffer),
-                (1, &scalar_buffer),
-                (2, &total_size_buffer),
-                (3, &batch_size_buffer),
-                (4, &partial_results_buffer),
-            ]),
-        );
-
-        // We dispatch 'num_tg' threadgroups, each with 'threads_per_tg' threads
-        let threadgroups = MTLSize::new(num_tg as NSUInteger, 1, 1);
-        let threads_per_group = MTLSize::new(threads_per_tg as u64, 1, 1);
-
-        command_encoder.dispatch_thread_groups(threadgroups, threads_per_group);
-        command_encoder.end_encoding();
-
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
-    let gpu_time = start.elapsed();
-    log::debug!("msm_all_gpu kernel took {:?}", gpu_time);
-
-    // -----------------------------------------------------------------------
-    // 4. Read back partial sums & reduce on CPU
-    // -----------------------------------------------------------------------
-    let partial_sums = MetalState::retrieve_contents::<u32>(&partial_results_buffer);
-
-    // Each partial sum is 24 u32. We'll parse them into points.
-    let mut final_result = P::from_u32_limbs(&partial_sums[0..24]); // first partial sum
-    for tg_id in 24..(num_tg as usize) {
-        // slice [tg_id*24 .. tg_id*24 + 24]
-        let offset = tg_id * 24;
-        let chunk_limbs = &partial_sums[offset..offset + 24];
-        let partial_pt = P::from_u32_limbs(chunk_limbs);
-        final_result = final_result + partial_pt;
-    }
-
-    Ok(final_result)
 }
 
 pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
@@ -584,7 +443,7 @@ mod tests {
         use ark_std::cfg_into_iter;
         use rand::rngs::OsRng;
         use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-        use crate::msm::metal::msm::{metal_msm, metal_msm_all_gpu, metal_msm_parallel, run_benchmark, setup_metal_state};
+        use crate::msm::metal::msm::{metal_msm, metal_msm_parallel, run_benchmark, setup_metal_state};
         use crate::msm::metal::msm::tests::{init_logger, BENCHMARKSPATH, LOG_INSTANCE_SIZE, NUM_INSTANCE};
         use crate::msm::utils::preprocess::{get_or_create_msm_instances};
 
@@ -666,32 +525,6 @@ mod tests {
                 let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
                 assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
                 assert_eq!(metal_msm.into_affine(), metal_msm_par.into_affine(), "This parallel msm is wrongly computed");
-                log::info!(
-                    "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
-                );
-            }
-        }
-
-        #[test]
-        fn test_all_gpu_correctness_medium_sample_ark() {
-            init_logger();
-
-            let mut metal_config = setup_metal_state();
-            let rng = OsRng::default();
-
-            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
-
-            for (i, instance) in instances.iter().enumerate() {
-                let points = &instance.points;
-                // map each scalar to a ScalarField
-                let scalars = &instance.scalars;
-
-                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
-                let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
-
-                let metal_msm = metal_msm_all_gpu(&points[..], &scalars[..], &mut metal_config, None, None).unwrap();
-                assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
                     i, LOG_INSTANCE_SIZE

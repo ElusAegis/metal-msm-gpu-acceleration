@@ -9,4 +9,3 @@
 #include "tests/test_unsigned_integer.h.metal"
 // #include "utils/parallel_radix_sort.h.metal"
 #include "msm.h.metal"
-#include "msm_all_gpu.h.metal"

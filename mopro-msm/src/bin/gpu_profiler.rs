@@ -2,7 +2,7 @@ use std::env;
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use rand::rngs::OsRng;
 use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-use mopro_msm::msm::metal::msm::{metal_msm_parallel, metal_msm_all_gpu, setup_metal_state, metal_msm};
+use mopro_msm::msm::metal::msm::{metal_msm_parallel, setup_metal_state, metal_msm};
 use mopro_msm::msm::utils::preprocess::get_or_create_msm_instances;
 
 fn main() {
@@ -49,18 +49,6 @@ fn main() {
                 let target_msm_log_size = args.get(3).and_then(|arg| arg.parse::<usize>().ok());
 
                 let _ = metal_msm_parallel(&instance, target_msm_log_size);
-            }
-            "all_gpu" => {
-                let batch_size = args.get(3).and_then(|arg| arg.parse::<u32>().ok());
-                let threads_per_tg = args.get(4).and_then(|arg| arg.parse::<u32>().ok());
-
-                let _ = metal_msm_all_gpu(
-                    &instance.points,
-                    &instance.scalars,
-                    &mut metal_config,
-                    batch_size,
-                    threads_per_tg
-                ).unwrap();
             }
             "cpu" => {
                 let _ = ArkG::msm(&affine_points, &instance.scalars).unwrap();

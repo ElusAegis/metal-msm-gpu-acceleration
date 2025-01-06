@@ -12,7 +12,7 @@ use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, Ark
 #[cfg(feature = "h2c")]
 use mopro_msm::msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
 use mopro_msm::msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_all_gpu, metal_msm_parallel, setup_metal_state};
+use mopro_msm::msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
 use mopro_msm::msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 
 #[cfg(feature = "h2c")]
@@ -49,17 +49,6 @@ fn msm_gpu_par(instances: &Vec<MsmInstance<ArkG, ArkFr>>, target_msm_log_size: O
 
     for instance in instances {
         let _ = metal_msm_parallel(instance, target_msm_log_size);
-    }
-}
-
-fn msm_all_gpu(instances: &Vec<MsmInstance<ArkG, ArkFr>>, batch_size: Option<u32>, threads_per_tg: Option<u32>) {
-    let mut metal_config = setup_metal_state();
-
-    for instance in instances {
-        let points = &instance.points;
-        let scalars = &instance.scalars;
-
-        let _ = metal_msm_all_gpu(points, scalars, &mut metal_config, batch_size, threads_per_tg);
     }
 }
 
@@ -158,54 +147,6 @@ fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
     bench_group.finish();
 }
 
-fn benchmark_find_optimal_par_all_gpu(criterion: &mut Criterion) {
-    init_logger();
-
-    // Create a benchmark group
-    let mut bench_group = criterion.benchmark_group("parameter_benches_all_gpu");
-
-    // Adjust these as you like
-    bench_group.sample_size(10); // Number of samples for Criterion
-    bench_group.measurement_time(Duration::from_secs(10)); // Time spent collecting data
-
-    let mut rng = OsRng::default();
-
-    // Example range of MSM sizes (number of points/scalars).
-    // Adjust as needed: e.g., 2^14, 2^15, 2^16, ...
-    let msm_sizes = (18..21u32).step_by(2);
-
-    // Example batch sizes (powers of 2, from 2 to 64)
-    let batch_sizes = (0..7).map(|x| 2u32.pow(x)).collect::<Vec<u32>>();
-
-    // Example threads per threadgroup candidates
-    // (4 “distant” values, as you suggested)
-    let threads_per_tg_values  = [128, 256];
-
-    // For each MSM size, generate or load data
-    for msm_size in msm_sizes {
-        // Generate or retrieve points and scalars
-        let instances = get_or_create_msm_instances::<ArkG, ArkFr>(msm_size, 1, &mut rng, None).unwrap();
-
-        // We’ll reuse the same config for each run, or recreate if needed
-
-
-        for &batch_size in &batch_sizes {
-            for &threads_per_tg in &threads_per_tg_values {
-
-                // If there will be less then 16 threadgroups, the GPU is underutilized
-                if 2u32.pow(msm_size) / batch_size / threads_per_tg < 32 {
-                    continue;
-                }
-
-                bench_group.bench_with_input(BenchmarkId::new(format!("msm_all_gpu/batch_{}__thread_group_{}__msm_{}", batch_size, threads_per_tg, msm_size), 0), &(batch_size, threads_per_tg), |b, &v| {
-                    b.iter(|| msm_all_gpu(&instances, Some(v.0), Some(v.1)));
-                });
-            }
-        }
-    }
-
-    bench_group.finish();
-}
 
 
 use std::sync::Once;
@@ -224,7 +165,6 @@ fn init_logger() {
 // Criterion groups
 criterion_group!(general_benches, benchmark_msm);
 criterion_group!(parameter_benches_par_gpu, benchmark_find_optimal_par_par_gpu);
-criterion_group!(parameter_benches_all_gpu, benchmark_find_optimal_par_all_gpu);
 
 // Criterion main
-criterion_main!(general_benches, parameter_benches_par_gpu, parameter_benches_all_gpu);
+criterion_main!(general_benches, parameter_benches_par_gpu);
