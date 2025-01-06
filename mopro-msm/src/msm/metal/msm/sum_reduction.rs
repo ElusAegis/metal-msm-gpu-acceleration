@@ -6,7 +6,6 @@
 //! The kernel logic is parallelized across threads in a group; each group handles
 //! exactly one window. Then partial sums are reduced in threadgroup shared memory.
 
-use std::time::Instant;
 use metal::{MTLSize};
 use objc::rc::autoreleasepool;
 use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
@@ -57,13 +56,6 @@ pub fn sum_reduction(
                               / desired_point_additions_per_thread)
         .min(max_threads);
 
-    // Print information about the kernel
-    log::debug!(
-        "(reduction) Launching reduction kernel with {} threadgroups of {} threads each",
-        num_thread_groups,
-        threads_per_group
-    );
-
     // Prepare buffers
     let buckets_size_buffer = config.state.alloc_buffer_data(&[params.buckets_size]);
 
@@ -107,6 +99,7 @@ mod tests {
     use ark_std::UniformRand;
     use proptest::prelude::any;
     use proptest::{prop_assert_eq, proptest};
+    use rand::SeedableRng;
     use super::*;
     use crate::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
     use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, ToLimbs};
@@ -239,7 +232,7 @@ mod tests {
             // Setup Metal state
             let config = setup_metal_state();
 
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
             let buckets_size = (1 << log_bucket_size) * bucket_size_mul as usize;
             let mut buckets_matrix = Vec::with_capacity(window_num * buckets_size);

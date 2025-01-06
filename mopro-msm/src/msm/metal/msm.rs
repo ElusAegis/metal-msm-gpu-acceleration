@@ -66,12 +66,12 @@ pub struct MetalMsmInstance {
     pub params: MetalMsmParams,
 }
 
-// Helper function for getting the windows size
-// TODO - find out the heuristic
-fn ln_without_floats(a: usize) -> usize {
-    // log2(a) * ln(2)
-    (ark_std::log2(a) * 69 / 100) as usize
-}
+// // Helper function for getting the windows size
+// // TODO - find out the heuristic
+// fn ln_without_floats(a: usize) -> usize {
+//     // log2(a) * ln(2)
+//     (ark_std::log2(a) * 69 / 100) as usize
+// }
 
 pub fn setup_metal_state() -> MetalMsmConfig {
     let state = MetalState::new(None).unwrap();
@@ -153,7 +153,6 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     let instances_size_buffer = config.state.alloc_buffer_data(&[instances_size as u32]);
     let scalar_buffer = config.state.alloc_buffer_data(&scalars_limbs);
     let base_buffer = config.state.alloc_buffer_data(&bases_limbs);
-    let num_windows_buffer = config.state.alloc_buffer_data(&[window_num as u32]);
     let buckets_matrix_buffer = config
         .state
         .alloc_buffer::<u32>(buckets_size * window_num * 8 * 3);
@@ -198,7 +197,6 @@ pub fn exec_metal_commands<P: FromLimbs>(
     instance: MetalMsmInstance,
 ) -> Result<P, MetalError> {
     let data = &instance.data;
-    let params = &instance.params;
 
     let prepare_time = Instant::now();
     prepare_buckets_indices(&config, &instance);
@@ -574,7 +572,7 @@ mod tests {
     }
 
     const LOG_INSTANCE_SIZE: u32 = 18;
-    const NUM_INSTANCE: u32 = 10;
+    const NUM_INSTANCE: u32 = 100;
     const BENCHMARKSPATH: &str = "benchmark_results";
 
     #[cfg(feature = "ark")]

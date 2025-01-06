@@ -42,8 +42,7 @@ pub(crate) fn prepare_buckets_indices(
 
 #[cfg(test)]
 mod test {
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Once;
+    use std::collections::HashSet;
     use ark_ff::{BigInt, BigInteger, PrimeField};
     use ark_std::UniformRand;
     use itertools::Itertools;

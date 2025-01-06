@@ -203,6 +203,7 @@ where
     }
 
     // 2. Not found => generate new data
+    log::debug!("Generating new MSM instances");
     let msm_list = generate_msm_instances::<P, S>(2u32.pow(log_instance_size), num_instances, &mut rng);
 
     // 3. Save

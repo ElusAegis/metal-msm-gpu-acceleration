@@ -4,14 +4,9 @@
 //! GPU points in each bucket, based on sorted bucket indices. It also includes
 //! a pure Rust implementation of the accumulation step for validation.
 
-use std::time::Instant;
-use metal::{Buffer, MTLSize};
+use metal::MTLSize;
 use objc::rc::autoreleasepool;
 use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
-use crate::msm::metal::abstraction::state::MetalState;
-use std::collections::HashMap;
-use std::ops::Add;
-use crate::msm::metal::abstraction::limbs_conversion::ark::ArkG;
 
 /// Dispatches the `bucket_wise_accumulation` Metal shader kernel.
 /// This kernel reads:
@@ -115,19 +110,16 @@ pub fn bucket_wise_accumulation(
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Add;
     use super::*;
     use crate::msm::metal::msm::{setup_metal_state, MetalMsmConfig, MetalMsmInstance};
-    use std::collections::HashSet;
-    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ec::CurveGroup;
     use ark_std::UniformRand;
-    use proptest::collection::vec;
     use proptest::prelude::*;
     use rand::{Rng, SeedableRng};
-    use rayon::iter::IntoParallelRefIterator;
-    use rayon::prelude::ParallelSliceMut;
-    use crate::msm::metal::msm::sort_buckets::sort_buckets_indices;
     use crate::msm::metal::abstraction::limbs_conversion::{FromLimbs, ark::ArkG, ToLimbs};
     use crate::msm::metal::abstraction::limbs_conversion::ark::ArkGAffine;
+    use crate::msm::metal::abstraction::state::MetalState;
     use crate::msm::metal::tests::init_logger;
 
     /// Struct to hold individual test case data
@@ -430,10 +422,10 @@ mod tests {
             rust_acc.resize((instance.params.buckets_size * instance.params.window_num) as usize, ArkG::default());
 
             // Log the test case name
-            println!("\n\nRunning test case: {}", test_case.name);
-            println!("Points: {:?}", points);
-            println!("GPU buckets_matrix: {:?}", gpu_buckets_matrix);
-            println!("Expected (Rust) buckets_matrix: {:?}", rust_acc);
+            log::debug!("\n\nRunning test case: {}", test_case.name);
+            log::debug!("Points: {:?}", points);
+            log::debug!("GPU buckets_matrix: {:?}", gpu_buckets_matrix);
+            log::debug!("Expected (Rust) buckets_matrix: {:?}", rust_acc);
 
             // Compare the lengths
             assert_eq!(
@@ -568,7 +560,7 @@ mod tests {
                 );
             }
 
-            println!("Test passed with seed={}, log_size={}, num_buckets={}", seed, log_size, num_buckets);
+            log::debug!("Test passed with seed={}, log_size={}, num_buckets={}", seed, log_size, num_buckets);
 
 
         }

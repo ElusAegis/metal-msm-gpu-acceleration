@@ -1,8 +1,4 @@
-use metal::{Buffer, MTLSize};
-use objc::rc::autoreleasepool;
-use std::time::Instant;
 use rayon::prelude::ParallelSliceMut;
-use crate::msm::metal::abstraction::state::MetalState;
 use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 /// Executes the `sort_buckets` Metal shader kernel.
@@ -17,7 +13,7 @@ use crate::msm::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 ///
 /// * `()` - The function modifies the `buckets_indices_buffer` in-place.
 pub fn sort_buckets_indices(
-    config: &MetalMsmConfig,
+    _config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
 ) {
     // Retrieve the raw metal::Buffer
@@ -83,11 +79,9 @@ pub fn create_test_instance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msm::metal::msm::{encode_instances, setup_metal_state};
+    use crate::msm::metal::msm::setup_metal_state;
     use std::collections::HashSet;
-    use std::fmt::format;
     use proptest::prelude::*;
-    use proptest::collection::vec as prop_vec;
     use rand::SeedableRng;
     use crate::msm::metal::abstraction::state::MetalState;
     use crate::msm::metal::tests::init_logger;
@@ -95,7 +89,7 @@ mod tests {
     /// We define a small GPU wrapper for testing
     fn sort_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance) -> Vec<u32> {
         // Sort on the GPU
-        let sorted_buffer = sort_buckets_indices(config, instance);
+        sort_buckets_indices(config, instance);
 
         // Read results back from GPU
         MetalState::retrieve_contents::<u32>(&instance.data.buckets_indices_buffer)
@@ -109,7 +103,7 @@ mod tests {
         // Suppose we have a small set of pairs (u32, u32):
         // (15, 2), (10, 1), (500, 3), (0, 0) ...
         // We'll place them in instance.data.buckets_indices_buffer as a flat Vec<u32>
-        let mut data = vec![
+        let data = vec![
             15, 2,
             10, 1,
             500, 3,
