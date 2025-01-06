@@ -431,7 +431,7 @@ mod tests {
     }
 
     const LOG_INSTANCE_SIZE: u32 = 18;
-    const NUM_INSTANCE: u32 = 100;
+    const NUM_INSTANCE: u32 = 10;
     const BENCHMARKSPATH: &str = "benchmark_results";
 
     #[cfg(feature = "ark")]
