@@ -1,4 +1,5 @@
 use std::env;
+use ark_ec::{CurveGroup, VariableBaseMSM};
 use rand::rngs::OsRng;
 use mopro_msm::msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
 use mopro_msm::msm::metal::msm::{metal_msm_parallel, metal_msm_all_gpu, setup_metal_state, metal_msm};
@@ -31,6 +32,7 @@ fn main() {
     // Generate or retrieve MSM instances
     const NUM_INSTANCES: u32 = 1;
     let instances = get_or_create_msm_instances::<ArkG, ArkFr>(log_instance_size, NUM_INSTANCES, rng, None).unwrap();
+    let affine_points = instances[0].points.iter().map(|p| p.into_affine()).collect::<Vec<_>>();
 
     // Initialize Metal configuration
     let mut metal_config = setup_metal_state();
@@ -59,6 +61,9 @@ fn main() {
                     batch_size,
                     threads_per_tg
                 ).unwrap();
+            }
+            "cpu" => {
+                let _ = ArkG::msm(&affine_points, &instance.scalars).unwrap();
             }
             _ => {
                 log::error!("Invalid RUN_MODE: {}", run_mode);
