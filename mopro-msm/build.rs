@@ -18,7 +18,8 @@ fn compile_shaders() {
 
     // Step 1: Compile every shader to AIR format
     for shader in &shaders {
-        let shader_path = Path::new(METAL_SHADER_DIR).join(shader);
+        let crate_path = env::var("CARGO_MANIFEST_DIR").unwrap();
+        let shader_path = Path::new(&crate_path).join(METAL_SHADER_DIR).join(shader);
         let air_output = Path::new(&out_dir).join(format!("{}.air", shader));
 
         let mut args = vec![
