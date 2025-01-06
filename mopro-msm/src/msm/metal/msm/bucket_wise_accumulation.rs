@@ -37,7 +37,7 @@ pub fn bucket_wise_accumulation(
     let params = &instance.params;
 
     // total buckets
-    let total_buckets = (params.buckets_size as u64) * (params.num_window as u64);
+    let total_buckets = (params.buckets_size as u64) * (params.window_num as u64);
     if total_buckets == 0 {
         log::debug!("No buckets to accumulate. Returning.");
         return;
@@ -52,7 +52,7 @@ pub fn bucket_wise_accumulation(
         .pipelines
         .bucket_wise_accumulation
         .max_total_threads_per_threadgroup()
-        .min(256) // The maximum number of threads per group due to shared memory limit
+        .min(128) // The maximum number of threads per group due to shared memory limit
         .min(actual_threads)
         as u64;
 
@@ -83,7 +83,7 @@ pub fn bucket_wise_accumulation(
             &config.pipelines.bucket_wise_accumulation,
             Some(&[
                 (0, &data.instances_size_buffer),     // _instances_size
-                (1, &data.num_windows_buffer),        // _num_windows
+                (1, &data.window_num_buffer),        // _num_windows
                 (2, &data.base_buffer),               // p_buff
                 (3, sorted_indices_buffer),           // sorted (x,y)
                 (4, &data.buckets_matrix_buffer),     // output sums
@@ -196,11 +196,11 @@ mod tests {
 
         let instance_data = MetalMsmData {
             window_size_buffer: config.state.alloc_buffer_data(&[0]),
+            window_num_buffer: config.state.alloc_buffer_data(&[num_windows]),
             instances_size_buffer: config.state.alloc_buffer_data(&[instance_size as u32]),
             window_starts_buffer: config.state.alloc_buffer_data(&[0]),
             scalar_buffer: config.state.alloc_buffer::<u32>(0),
             base_buffer: config.state.alloc_buffer_data(&bases_limbs),
-            num_windows_buffer: config.state.alloc_buffer_data(&[num_windows]),
             buckets_matrix_buffer: config.state.alloc_buffer::<u32>((total_bucket_amount * 8 * 3) as usize),
             buckets_indices_buffer: config.state.alloc_buffer::<u32>(0),
             res_buffer: config.state.alloc_buffer::<u32>(0),
@@ -212,7 +212,7 @@ mod tests {
             // We do this because the total_bucket_amount is bucket_size * num_window
             buckets_size: total_bucket_amount / num_windows as u32,
             window_size: 0,
-            num_window: num_windows as u32,
+            window_num: num_windows as u32,
         };
 
         (
@@ -434,7 +434,7 @@ mod tests {
 
             // Compute expected results using Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&test_case.buckets_indices, &points);
-            rust_acc.resize((instance.params.buckets_size * instance.params.num_window) as usize, ArkG::default());
+            rust_acc.resize((instance.params.buckets_size * instance.params.window_num) as usize, ArkG::default());
 
             // Log the test case name
             println!("\n\nRunning test case: {}", test_case.name);
@@ -502,7 +502,7 @@ mod tests {
 
             // Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&buckets_indices, &points);
-            rust_acc.resize((instance.params.buckets_size * instance.params.num_window) as usize, ArkG::default());
+            rust_acc.resize((instance.params.buckets_size * instance.params.window_num) as usize, ArkG::default());
 
             // Compare the lengths
             prop_assert_eq!(gpu_buckets_matrix.len(), rust_acc.len(),
@@ -559,7 +559,7 @@ mod tests {
 
             // Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&buckets_indices, &points);
-            rust_acc.resize((instance.params.buckets_size * instance.params.num_window) as usize, ArkG::default());
+            rust_acc.resize((instance.params.buckets_size * instance.params.window_num) as usize, ArkG::default());
 
             // Compare the lengths
             prop_assert_eq!(gpu_buckets_matrix.len(), rust_acc.len(),

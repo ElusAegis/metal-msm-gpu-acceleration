@@ -1,6 +1,7 @@
 mod prepare_buckets_indices;
 mod sort_buckes;
 mod bucket_wise_accumulation;
+mod sum_reduction;
 
 use std::ops::Add;
 use std::sync::{Arc, Mutex};
@@ -22,14 +23,15 @@ use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelIterator, I
 use crate::msm::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::msm::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::msm::metal::msm::sort_buckes::sort_buckets_indices;
+use crate::msm::metal::msm::sum_reduction::sum_reduction;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
+    pub window_num_buffer: Buffer,
     pub instances_size_buffer: Buffer,
     pub window_starts_buffer: Buffer,
     pub scalar_buffer: Buffer,
     pub base_buffer: Buffer,
-    pub num_windows_buffer: Buffer,
     pub buckets_indices_buffer: Buffer,
     pub buckets_matrix_buffer: Buffer,
     pub res_buffer: Buffer,
@@ -41,7 +43,7 @@ pub struct MetalMsmParams {
     pub instances_size: u32,
     pub buckets_size: u32,
     pub window_size: u32,
-    pub num_window: u32,
+    pub window_num: u32,
 }
 
 pub struct MetalMsmPipeline {
@@ -116,7 +118,7 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     };
     let buckets_size = (1 << window_size) - 1;
     let window_starts: Vec<u32> = (0..modulus_bit_size as u32).step_by(window_size as usize).collect();
-    let num_windows = window_starts.len();
+    let window_num = window_starts.len();
 
     // flatten scalar and base to Vec<u32> for GPU usage
     let flatten_start = Instant::now();
@@ -147,21 +149,22 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     // store params to GPU shared memory
     let store_params_start = Instant::now();
     let window_size_buffer = config.state.alloc_buffer_data(&[window_size as u32]);
+    let window_num_buffer = config.state.alloc_buffer_data(&[window_num as u32]);
     let instances_size_buffer = config.state.alloc_buffer_data(&[instances_size as u32]);
     let scalar_buffer = config.state.alloc_buffer_data(&scalars_limbs);
     let base_buffer = config.state.alloc_buffer_data(&bases_limbs);
-    let num_windows_buffer = config.state.alloc_buffer_data(&[num_windows as u32]);
+    let num_windows_buffer = config.state.alloc_buffer_data(&[window_num as u32]);
     let buckets_matrix_buffer = config
         .state
-        .alloc_buffer::<u32>(buckets_size * num_windows * 8 * 3);
-    let res_buffer = config.state.alloc_buffer::<u32>(num_windows * 8 * 3);
+        .alloc_buffer::<u32>(buckets_size * window_num * 8 * 3);
+    let res_buffer = config.state.alloc_buffer::<u32>(window_num * 8 * 3);
     let result_buffer = config.state.alloc_buffer::<u32>(8 * 3);
     // convert window_starts to u32 to give the exact storage need for GPU
     let window_starts_buffer = config.state.alloc_buffer_data(&window_starts);
     // prepare bucket_size * num_windows * 2
     let buckets_indices_buffer = config
         .state
-        .alloc_buffer::<u32>(instances_size * num_windows * 2);
+        .alloc_buffer::<u32>(instances_size * window_num * 2);
     log::debug!("Store params time: {:?}", store_params_start.elapsed());
 
     // // debug
@@ -170,11 +173,11 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     MetalMsmInstance {
         data: MetalMsmData {
             window_size_buffer,
+            window_num_buffer,
             instances_size_buffer,
             window_starts_buffer,
             scalar_buffer,
             base_buffer,
-            num_windows_buffer,
             buckets_matrix_buffer,
             buckets_indices_buffer,
             res_buffer,
@@ -185,7 +188,7 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
             instances_size: instances_size as u32,
             buckets_size: buckets_size as u32,
             window_size: window_size as u32,
-            num_window: num_windows as u32,
+            window_num: window_num as u32,
         },
     }
 }
@@ -262,7 +265,7 @@ pub fn exec_metal_commands<P: FromLimbs>(
                 Some(&[
                     (0, &data.window_size_buffer),
                     (1, &data.window_starts_buffer),
-                    (2, &data.num_windows_buffer),
+                    (2, &data.window_num_buffer),
                     (3, &data.res_buffer),
                     (4, &data.result_buffer),
                 ]),

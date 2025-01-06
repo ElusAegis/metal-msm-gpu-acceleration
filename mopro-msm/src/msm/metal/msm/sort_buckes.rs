@@ -184,7 +184,7 @@ mod tests {
             window_starts_buffer: config.state.alloc_buffer_data(&[0]),
             scalar_buffer: config.state.alloc_buffer::<u32>(0),
             base_buffer: config.state.alloc_buffer::<u32>(0),
-            num_windows_buffer: config.state.alloc_buffer_data(&[1u32]),
+            window_num_buffer: config.state.alloc_buffer_data(&[1u32]),
             buckets_matrix_buffer: config.state.alloc_buffer::<u32>(0),
             buckets_indices_buffer,
             res_buffer: config.state.alloc_buffer::<u32>(0),
@@ -195,7 +195,7 @@ mod tests {
             instances_size: length as u32,
             buckets_size: 0,
             window_size: 0,
-            num_window: 1,
+            window_num: 1,
         };
 
         MetalMsmInstance {

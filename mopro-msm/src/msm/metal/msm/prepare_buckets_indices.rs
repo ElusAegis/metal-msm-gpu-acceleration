@@ -25,7 +25,7 @@ pub(crate) fn prepare_buckets_indices(
             Some(&[
                 (0, &data.window_size_buffer),
                 (1, &data.window_starts_buffer),
-                (2, &data.num_windows_buffer),
+                (2, &data.window_num_buffer),
                 (3, &data.scalar_buffer),
                 (4, &data.buckets_indices_buffer),
             ]),
@@ -159,14 +159,14 @@ mod test {
         // Execute the pure Rust implementation
         let rust_buckets_indices = prepare_buckets_indices_rust(
             instance.params.window_size,
-            instance.params.num_window,
+            instance.params.window_num,
             &scalars,
         );
 
         log::debug!("Rust Result: {:?}", rust_buckets_indices.iter().sorted());
         log::debug!("GPU Result: {:?}", gpu_buckets_indices.iter().sorted());
 
-        let expected_size = instance.params.num_window * instance.params.instances_size;
+        let expected_size = instance.params.window_num * instance.params.instances_size;
 
         // Check that the number of buckets is as expected
         assert!(gpu_buckets_indices.len() <= expected_size as usize);
@@ -217,7 +217,7 @@ mod test {
             // Execute the pure Rust implementation
             let rust_buckets_indices = prepare_buckets_indices_rust(
                 instance.params.window_size,
-                instance.params.num_window,
+                instance.params.window_num,
                 &scalars,
             );
 
