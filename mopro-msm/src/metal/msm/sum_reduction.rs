@@ -6,9 +6,138 @@
 //! The kernel logic is parallelized across threads in a group; each group handles
 //! exactly one window. Then partial sums are reduced in threadgroup shared memory.
 
+use instant::Instant;
 use metal::{MTLSize};
 use objc::rc::autoreleasepool;
 use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+
+fn sum_reduction_partial(
+    config: &MetalMsmConfig,
+    instance: &MetalMsmInstance,
+    groups_per_window: u32,
+) -> Option<metal::Buffer> {
+    let data = &instance.data;
+    let params = &instance.params;
+
+    let num_windows = params.window_num;
+    if num_windows == 0 {
+        return None;
+    }
+    // total threadgroups = num_windows * groups_per_window
+    let total_threadgroups = (num_windows as u64) * (groups_per_window as u64);
+    if total_threadgroups == 0 {
+        return None;
+    }
+
+    // Decide how many threads per group (similar logic to your original).
+    // We'll clamp by pipeline max, etc.
+    let max_threads = config
+        .pipelines
+        .sum_reduction_partial
+        .max_total_threads_per_threadgroup()
+        .min(64);  // Threadgroup shared memory limit - TODO - attempt to increase
+    // For example:
+    let threads_per_group = max_threads; // or pick some heuristic
+
+    // Prepare small buffers for the kernel’s constants
+    let buckets_size_buffer  = config.state.alloc_buffer_data(&[params.buckets_size]);
+    let window_num_buffer    = config.state.alloc_buffer_data(&[num_windows]);
+    let groups_per_window_buffer = config.state.alloc_buffer_data(&[groups_per_window]);
+
+    // Prepare the partial_buffer (device) sized to total_threadgroups
+    let partial_result_count = total_threadgroups as usize;
+    let partial_result_u32_size = 49; // 49 = 3 * 8 + 3 * 8 + 1 (SerBn254Point, SerBn254Point, u32)
+    let partial_results_buffer = config.state.alloc_buffer::<u32>(partial_result_count * partial_result_u32_size);
+
+    // MTL thread dispatch
+    let mtl_threadgroups = MTLSize::new(total_threadgroups, 1, 1);
+    let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
+
+    autoreleasepool(|| {
+        let (cmd_buffer, cmd_encoder) = config.state.setup_command(
+            &config.pipelines.sum_reduction_partial,
+            Some(&[
+                (0, &buckets_size_buffer),
+                (1, &window_num_buffer),
+                (2, &groups_per_window_buffer),
+                (3, &data.buckets_matrix_buffer),
+                (4, &partial_results_buffer),
+            ]),
+        );
+
+        // We must set threadgroup memory lengths for the arrays: sums, sos, counts.
+        // sums and sos each hold `threads_per_group` SerBn254Points:
+        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * threads_per_group;
+
+        cmd_encoder.set_threadgroup_memory_length(0, shared_memory_length);
+
+        // Dispatch
+        cmd_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
+        cmd_encoder.end_encoding();
+        cmd_buffer.commit();
+        cmd_buffer.wait_until_completed();
+    });
+
+    Some(partial_results_buffer)
+}
+
+pub fn sum_reduction_final(
+    config: &MetalMsmConfig,
+    instance: &MetalMsmInstance,
+    partial_results_buffer: &metal::Buffer,
+    groups_per_window: u32,
+) {
+    let data = &instance.data;
+    let params = &instance.params;
+    let num_windows = params.window_num;
+    if num_windows == 0 {
+        return;
+    }
+
+    // We'll have exactly one threadgroup per window => total of num_windows.
+    let total_threadgroups = num_windows as u64;
+
+    // Decide how many threads to launch per group. 
+    // We need at least enough threads to cover 'groups_per_window' partials.
+    let max_threads = config
+        .pipelines
+        .sum_reduction_final
+        .max_total_threads_per_threadgroup()
+        .min(64); // Threadgroup shared memory limit - TODO - attempt to increase
+    // Suppose we do:
+    let threads_per_group = max_threads.min(groups_per_window as u64).max(1);
+
+    // Prepare small buffers:
+    let num_windows_buffer       = config.state.alloc_buffer_data(&[num_windows]);
+    let groups_per_window_buffer = config.state.alloc_buffer_data(&[groups_per_window]);
+
+    // MTLSize
+    let mtl_threadgroups      = MTLSize::new(total_threadgroups, 1, 1);
+    let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
+
+    autoreleasepool(|| {
+        let (cmd_buffer, cmd_encoder) = config.state.setup_command(
+            &config.pipelines.sum_reduction_final,
+            Some(&[
+                (0, &num_windows_buffer),
+                (1, &groups_per_window_buffer),
+                (2, &partial_results_buffer), // partial results from stage1
+                (3, &data.res_buffer),
+            ]),
+        );
+
+        // As in partial kernel, set threadgroup memory:
+        let partial_result_u32_size = 49; // 49 = 3 * 8 + 3 * 8 + 1 (SerBn254Point, SerBn254Point, u32)
+        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * threads_per_group;
+        cmd_encoder.set_threadgroup_memory_length(0, shared_memory_length);
+
+        // Dispatch
+        cmd_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
+        cmd_encoder.end_encoding();
+        cmd_buffer.commit();
+        cmd_buffer.wait_until_completed();
+    });
+}
 
 /// Dispatches the `sum_reduction` Metal shader kernel.
 ///
@@ -29,67 +158,19 @@ pub fn sum_reduction(
     config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
 ) {
-    let data = &instance.data;
-    let params = &instance.params;
+    let buckets_per_threadgroup = 4096; // some heuristic
+    let groups_per_window = (instance.params.buckets_size + 1).div_ceil(buckets_per_threadgroup);
 
-    // Each window => one threadgroup => group_id in [0..window_size)
-    let num_thread_groups = params.window_num as u64;
-    if num_thread_groups == 0 {
-        // no windows => nothing to do
-        return;
-    }
+    // Stage 1: Partial reduction
+    let partial_reduction_start = Instant::now();
+    let partial_results_buffer = sum_reduction_partial(config, instance, groups_per_window)
+        .expect("sum_reduction_partial failed");
+    log::debug!("Partial reduction took {:?}", partial_reduction_start.elapsed());
 
-    // Decide how many threads per group
-    // For example, if we want each thread to handle ~16 additions, we can do:
-    // threads_per_group = ((buckets_len + 15)/16).
-    // But the simpler approach is just clamp by the pipeline's max.
-    let max_threads = config
-        .pipelines
-        .sum_reduction
-        .max_total_threads_per_threadgroup()
-        .min(64); // Threadgroup shared memory limit - TODO - attempt to increase
-
-
-    // A typical approach:
-    let desired_point_additions_per_thread = 16;
-    let threads_per_group = ((params.buckets_size as u64 + desired_point_additions_per_thread -1)
-                              / desired_point_additions_per_thread)
-        .min(max_threads);
-
-    // Prepare buffers
-    let buckets_size_buffer = config.state.alloc_buffer_data(&[params.buckets_size]);
-
-    // Prepare MTLSize
-    let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
-    let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
-
-    autoreleasepool(|| {
-        let (command_buffer, command_encoder) = config.state.setup_command(
-            &config.pipelines.sum_reduction,
-            Some(&[
-                (0, &buckets_size_buffer),       // c (window_size)
-                (1, &data.window_num_buffer),    // k_buff
-                (2, &data.buckets_matrix_buffer),// buckets_matrix
-                (3, &data.res_buffer),           // res
-            ]),
-        );
-
-        // The kernel uses a threadgroup array of partial sums (SerBn254Point)
-        // If each thread writes 1 partial sum => shared_accumulators size = threads_per_group * size_of(SerBn254Point).
-        // Scalar is stored in 8 u32s, Point is represented as 3 scalars, which is 24 u32s:
-        let size_of_ser_point = 24 * size_of::<u32>() as u64;
-        let shared_mem_size = threads_per_group * size_of_ser_point;
-        command_encoder.set_threadgroup_memory_length(0, shared_mem_size);
-        command_encoder.set_threadgroup_memory_length(1, shared_mem_size);
-        command_encoder.set_threadgroup_memory_length(2, threads_per_group);
-
-
-        // Dispatch
-        command_encoder.dispatch_thread_groups(mtl_threadgroups, mtl_threads_per_group);
-        command_encoder.end_encoding();
-        command_buffer.commit();
-        command_buffer.wait_until_completed();
-    });
+    // Stage 2: Final reduction
+    let final_reduction_start = Instant::now();
+    sum_reduction_final(config, instance, &partial_results_buffer, groups_per_window);
+    log::debug!("Final reduction took {:?}", final_reduction_start.elapsed());
 }
 
 #[cfg(all(test, feature="ark"))] // FIXME - make the tests also work when h2c feature is active

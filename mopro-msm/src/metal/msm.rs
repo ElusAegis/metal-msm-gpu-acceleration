@@ -47,7 +47,8 @@ pub struct MetalMsmParams {
 pub struct MetalMsmPipeline {
     pub prepare_buckets_indices: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
-    pub sum_reduction: ComputePipelineState,
+    pub sum_reduction_partial: ComputePipelineState,
+    pub sum_reduction_final: ComputePipelineState,
     pub final_accumulation: ComputePipelineState,
 }
 
@@ -73,7 +74,8 @@ pub fn setup_metal_state() -> MetalMsmConfig {
 
     let prepare_buckets_indices = state.setup_pipeline("prepare_buckets_indices").unwrap();
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
-    let sum_reduction = state.setup_pipeline("sum_reduction").unwrap();
+    let sum_reduction_partial = state.setup_pipeline("sum_reduction_partial").unwrap();
+    let sum_reduction_final = state.setup_pipeline("sum_reduction_final").unwrap();
     let final_accumulation = state.setup_pipeline("final_accumulation").unwrap();
 
     MetalMsmConfig {
@@ -81,7 +83,8 @@ pub fn setup_metal_state() -> MetalMsmConfig {
         pipelines: MetalMsmPipeline {
             prepare_buckets_indices,
             bucket_wise_accumulation,
-            sum_reduction,
+            sum_reduction_partial,
+            sum_reduction_final,
             final_accumulation,
         },
     }
@@ -305,7 +308,6 @@ where
 
 
     // Step 5: Convert GPU result to CPU representation
-    let prep_result_time = Instant::now();
     let cpu_result: C = unsafe {
         assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<P>(),
             "C and P must have the same size for reinterpret casting");
@@ -313,8 +315,6 @@ where
             "C and P must have the same alignment for reinterpret casting");
         std::ptr::read(&gpu_result as *const P as *const C)
     };
-    log::debug!("Prep Result time: {:?}", prep_result_time.elapsed());
-
 
     cpu_result
 }
@@ -322,8 +322,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    const LOG_INSTANCE_SIZE: u32 = 20;
-    const NUM_INSTANCE: u32 = 1;
+    const LOG_INSTANCE_SIZE: u32 = 18;
+    const NUM_INSTANCE: u32 = 10;
 
     #[cfg(feature = "ark")]
     mod ark {

@@ -314,18 +314,124 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
     }
 }
 
-// window-wise reduction
-[[kernel]] void sum_reduction(
-    constant uint32_t &buckets_size        [[ buffer(0) ]],
-    constant uint32_t &num_windows         [[ buffer(1) ]],
-    constant Point*    buckets_matrix      [[ buffer(2) ]],
-    device   Point*    res                 [[ buffer(3) ]],
+// This kernel produces partial results for each group
+// so that multiple groups can cooperatively reduce a single window.
+[[kernel]] void sum_reduction_partial(
+    constant uint32_t &buckets_size          [[ buffer(0) ]],
+    constant uint32_t &num_windows           [[ buffer(1) ]],
+    constant uint32_t &groups_per_window     [[ buffer(2) ]],
+    device const Point* buckets_matrix    [[ buffer(3) ]],
+    device   PartialReductionResult* partial_results_buffer [[ buffer(4) ]],
 
-    // We'll reuse this threadgroup pointer but split it into two arrays
-    // (and a counts array) inside the kernel
-    threadgroup SerBn254Point *shared_sums [[ threadgroup(0) ]],
-    threadgroup SerBn254Point *shared_sos  [[ threadgroup(1) ]],
-    threadgroup uint *shared_counts        [[ threadgroup(2) ]],
+    // We'll reuse shared memory for partial sums, partial SoS, partial counts
+    threadgroup PartialReductionResult *shared_results   [[ threadgroup(0) ]],
+    // Thread/group IDs
+    uint t_id             [[ thread_index_in_threadgroup ]],
+    uint group_id         [[ threadgroup_position_in_grid ]],
+    uint threads_per_tg   [[ threads_per_threadgroup ]]
+)
+{
+    // ------------------------------------------------------------
+    // 0) Which window does this group handle, and which slice?
+    // ------------------------------------------------------------
+    uint32_t total_threadgroups = num_windows * groups_per_window;
+    if (group_id >= total_threadgroups) {
+        return;
+    }
+
+    // Identify window + group-within-window
+    uint32_t window_idx      = group_id / groups_per_window;
+    uint32_t group_in_window = group_id % groups_per_window;
+
+    // Buckets start for this window
+    uint32_t window_base_idx = window_idx * buckets_size;
+
+    // Among the 'groups_per_window' groups, figure out which slice of
+    // the buckets this group is responsible for:
+    uint32_t chunk_size = (buckets_size + groups_per_window - 1) / groups_per_window;
+    uint32_t start_global = group_in_window * chunk_size;
+    uint32_t end_global   = min(start_global + chunk_size, buckets_size);
+
+    // ------------------------------------------------------------
+    // 1) Each thread sums up a sub-chunk of [start_global..end_global)
+    // ------------------------------------------------------------
+    // Further subdivide across t_id within the group:
+    uint32_t slice_size = (end_global > start_global)
+                        ? (end_global - start_global)
+                        : 0;
+    uint32_t per_thread = (slice_size + threads_per_tg - 1) / threads_per_tg;
+    uint32_t start_idx  = start_global + t_id * per_thread;
+    uint32_t end_idx    = min(start_idx + per_thread, end_global);
+
+    Point local_sum = Point::neutral_element();
+    Point local_sos = Point::neutral_element();
+
+    // We'll do a reverse loop to match your original style:
+    for (uint32_t i = end_idx; i > start_idx; i--) {
+        uint32_t b_idx = i - 1;
+        local_sum = local_sum + buckets_matrix[window_base_idx + b_idx];
+        local_sos = local_sos + local_sum;
+    }
+    uint local_count = (end_idx > start_idx) ? (end_idx - start_idx) : 0;
+
+    // Store partials into threadgroup
+    shared_results[t_id].sum   = toSerBn254Point(local_sum);
+    shared_results[t_id].sos   = toSerBn254Point(local_sos);
+    shared_results[t_id].count = local_count;
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ------------------------------------------------------------
+    // 2) Tree reduction within the group (combine S, SoS, count)
+    // ------------------------------------------------------------
+    for (uint32_t offset = 1; offset < threads_per_tg; offset <<= 1) {
+        if (t_id + offset < threads_per_tg) {
+            Point s_left  = fromSerBn254Point(shared_results[t_id].sum);
+            Point s_right = fromSerBn254Point(shared_results[t_id + offset].sum);
+
+            Point sos_left  = fromSerBn254Point(shared_results[t_id].sos);
+            Point sos_right = fromSerBn254Point(shared_results[t_id + offset].sos);
+
+            uint c_left  = shared_results[t_id].count;
+            uint c_right = shared_results[t_id + offset].count;
+
+            // Combine sums:
+            Point s_combined = s_left + s_right;
+
+            // Combine sum_of_sums:
+            // The partial sums of the 'right' side are shifted by s_left (repeated c_left times).
+            Point shifted_right = s_right.operate_with_self(c_left);
+            Point sos_combined = sos_left + shifted_right + sos_right;
+
+            // Combine counts
+            uint c_combined = c_left + c_right;
+
+            // Write results back
+            shared_results[t_id].sum   = toSerBn254Point(s_combined);
+            shared_results[t_id].sos    = toSerBn254Point(sos_combined);
+            shared_results[t_id].count = c_combined;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // ------------------------------------------------------------
+    // 3) Thread 0 writes a PartialReductionResult
+    //    for this group into partial_results_buffer[group_id]
+    // ------------------------------------------------------------
+    if (t_id == 0) {
+        PartialReductionResult r = shared_results[0];
+        partial_results_buffer[group_id] = r;
+    }
+}
+
+[[kernel]] void sum_reduction_final(
+    constant uint32_t &num_windows          [[ buffer(0) ]],
+    constant uint32_t &groups_per_window    [[ buffer(1) ]],
+    device const PartialReductionResult* partial_results_buffer [[ buffer(2) ]],
+    device Point* res                       [[ buffer(3) ]],
+
+    // We reuse threadgroup memory for partial sums, partial SoS, partial counts
+    threadgroup PartialReductionResult *shared_results   [[ threadgroup(0) ]],
 
     // Thread/group IDs
     uint t_id             [[ thread_index_in_threadgroup ]],
@@ -333,88 +439,88 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
     uint threads_per_tg   [[ threads_per_threadgroup ]]
 )
 {
-    // Safety: if the hardware launched extra threadgroups beyond num_windows, just skip.
+    // 1) If group_id >= num_windows, do nothing
     if (group_id >= num_windows) {
         return;
     }
 
-    // Each threadgroup handles one window (indexed by group_id)
-    uint32_t window_base_idx = group_id * buckets_size;
-
-    // Figure out each thread’s chunk of buckets
-    uint32_t chunk_size = (buckets_size + threads_per_tg - 1) / threads_per_tg;
-    uint32_t start_idx  = t_id * chunk_size;
-    uint32_t end_idx    = min(start_idx + chunk_size, buckets_size);
-
-    // --------------------------------------------------------------------------
-    // 1) Each thread computes local S and SoS over its chunk
-    // --------------------------------------------------------------------------
-    Point local_sum        = Point::neutral_element();
-    Point local_sum_of_sums = Point::neutral_element();
-
-    // Simple forward loop (backward is also OK, so long as you do it consistently).
-    for (uint32_t i = end_idx; i > start_idx; i--)
-    {
-        uint32_t next_idx = i - 1;
-        local_sum = local_sum + buckets_matrix[window_base_idx + next_idx];
-        local_sum_of_sums = local_sum_of_sums + local_sum;
+    // 2) Each threadgroup merges all partials for window = group_id
+    //    We'll be reading from partial_buffer in [base..base + groups_per_window)
+    uint base_idx = group_id * groups_per_window;
+    if (groups_per_window == 0) {
+        return;
     }
 
-    // Number of buckets processed by this thread
-    uint32_t local_count = (end_idx > start_idx) ? (end_idx - start_idx) : 0;
+    // 3) Divide groups_per_window partial results among the threads
+    uint chunk_size = (groups_per_window + threads_per_tg - 1) / threads_per_tg;
+    uint start_idx  = t_id * chunk_size;
+    uint end_idx    = min(start_idx + chunk_size, groups_per_window);
 
-    // Store partials in threadgroup memory
-    shared_sums[t_id]    = toSerBn254Point(local_sum);
-    shared_sos[t_id]     = toSerBn254Point(local_sum_of_sums);
-    shared_counts[t_id]  = local_count;
+    // 4) Local accumulation of {count, sum, sos}
+    Point local_sum = Point::neutral_element();
+    Point local_sos = Point::neutral_element();
+    uint local_count = 0;
+
+    // We can combine partial results from left-to-right or right-to-left;
+    // just be consistent with how we interpret sum/sos merges.
+    // The "tree-style" formula for merging partial results is:
+    //   S_combined   = S_left + S_right
+    //   SoS_combined = SoS_left + (S_right * count_left) + SoS_right
+    //   count_comb   = count_left + count_right
+    // But here we do a simple linear accumulation, carefully applying the shift for SoS:
+
+    for (uint i = start_idx; i < end_idx; i++) {
+        PartialReductionResult pr = partial_results_buffer[base_idx + i];
+        Point s_r   = fromSerBn254Point(pr.sum);
+        Point sos_r = fromSerBn254Point(pr.sos);
+        uint  c_r   = pr.count;
+
+        // Merge (local) with (r)
+        // local_sum, local_sos, local_count  +   (s_r, sos_r, c_r)
+        // => local_sum += s_r
+        // => local_sos = local_sos + (s_r * local_count) + sos_r
+        // => local_count += c_r
+
+        Point s_shifted = s_r.operate_with_self(local_count);
+        local_sos = local_sos + s_shifted + sos_r;
+        local_sum = local_sum + s_r;
+        local_count += c_r;
+    }
+
+    // Store partial into threadgroup arrays
+    shared_results[t_id].sum   = toSerBn254Point(local_sum);
+    shared_results[t_id].sos    = toSerBn254Point(local_sos);
+    shared_results[t_id].count = local_count;
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // --------------------------------------------------------------------------
-    // 2) Tree‐style reduction of (S, SoS, count) across all threads in the group
-    //    We do log2(threads_per_tg) stages, merging pairs left–right
-    // --------------------------------------------------------------------------
-    for (uint32_t offset = 1; offset < threads_per_tg; offset <<= 1)
-    {
-        if (t_id < threads_per_tg && t_id + offset < threads_per_tg)
-        {
-            Point s_left  = fromSerBn254Point(shared_sums[t_id]);
-            Point s_right = fromSerBn254Point(shared_sums[t_id + offset]);
+    // 5) Tree-style reduce among threads
+    for (uint offset = 1; offset < threads_per_tg; offset <<= 1) {
+        if (t_id + offset < threads_per_tg) {
+            Point s_left  = fromSerBn254Point(shared_results[t_id].sum);
+            Point s_right = fromSerBn254Point(shared_results[t_id + offset].sum);
 
-            Point sos_left  = fromSerBn254Point(shared_sos[t_id]);
-            Point sos_right = fromSerBn254Point(shared_sos[t_id + offset]);
+            Point sos_left  = fromSerBn254Point(shared_results[t_id].sos);
+            Point sos_right = fromSerBn254Point(shared_results[t_id + offset].sos);
 
-            uint  count_left  = shared_counts[t_id];
-            uint  count_right = shared_counts[t_id + offset];
+            uint c_left  = shared_results[t_id].count;
+            uint c_right = shared_results[t_id + offset].count;
 
-            // Combine sums
             Point s_combined = s_left + s_right;
+            Point s_shifted  = s_right.operate_with_self(c_left);
+            Point sos_combined = sos_left + s_shifted + sos_right;
+            uint c_combined = c_left + c_right;
 
-            // Combine sum_of_sums:
-            // When the right chunk is appended after the left chunk,
-            // each partial sum on the right is “shifted” by s_left.
-            Point product = s_right.operate_with_self(count_left);
-            Point sos_combined = sos_left + product + sos_right;
-
-            // Combine counts
-            uint c_combined = count_left + count_right;
-
-            // Write result back
-            shared_sums[t_id]   = toSerBn254Point(s_combined);
-            shared_sos[t_id]    = toSerBn254Point(sos_combined);
-            shared_counts[t_id] = c_combined;
+            shared_results[t_id].sum   = toSerBn254Point(s_combined);
+            shared_results[t_id].sos    = toSerBn254Point(sos_combined);
+            shared_results[t_id].count = c_combined;
         }
-
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    // --------------------------------------------------------------------------
-    // 3) Finally, thread 0 holds the full sum_of_sums for this window
-    //    We write that out to res[group_id].
-    // --------------------------------------------------------------------------
-    if (t_id == 0)
-    {
-        Point final_sos = fromSerBn254Point(shared_sos[0]);
+    // 6) Thread 0 writes final SoS to res[group_id]
+    if (t_id == 0) {
+        Point final_sos = fromSerBn254Point(shared_results[0].sos);
         res[group_id] = final_sos;
     }
 }
