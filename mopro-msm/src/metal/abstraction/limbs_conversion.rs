@@ -269,25 +269,25 @@ pub mod h2c {
 mod test {
     #![allow(unused_imports)]
 
-    use std::ops::Mul;
+    use super::{FromLimbs, ToLimbs};
+    use crate::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
+    #[cfg(feature = "h2c")]
+    use crate::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_ff::Field;
     use ark_std::UniformRand;
     #[cfg(feature = "h2c")]
     use halo2curves::{
-        ff::{Field as H2Field},
-        group::{Curve, Group},
-        group::prime::PrimeCurveAffine
+        ff::Field as H2Field,
+        group::prime::PrimeCurveAffine,
+        group::{Curve, Group}
     };
-    use proptest::{prop_assert_eq, prop_compose, proptest};
     use proptest::arbitrary::any;
     use proptest::prelude::ProptestConfig;
+    use proptest::{prop_assert_eq, prop_compose, proptest};
     use rand::prelude::StdRng;
     use rand::SeedableRng;
-    use crate::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
-    #[cfg(feature = "h2c")]
-    use crate::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
-    use super::{FromLimbs, ToLimbs};
+    use std::ops::Mul;
 
     #[cfg(feature = "h2c")]
     prop_compose! {

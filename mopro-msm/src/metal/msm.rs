@@ -70,12 +70,11 @@ pub struct MetalMsmInstance {
 
 pub fn setup_metal_state() -> MetalMsmConfig {
     let state = MetalState::new(None).unwrap();
-    let final_accumulation = state.setup_pipeline("final_accumulation").unwrap();
 
-    // TODO:
     let prepare_buckets_indices = state.setup_pipeline("prepare_buckets_indices").unwrap();
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
     let sum_reduction = state.setup_pipeline("sum_reduction").unwrap();
+    let final_accumulation = state.setup_pipeline("final_accumulation").unwrap();
 
     MetalMsmConfig {
         state,
