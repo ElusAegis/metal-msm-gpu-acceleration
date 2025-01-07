@@ -13,11 +13,11 @@ use crate::metal::abstraction::{
 use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::Instant;
-use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
+use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
 use crate::utils::preprocess::MsmInstance;
 use metal::*;
 use objc::rc::autoreleasepool;
-use rayon::prelude::{ParallelSliceMut, ParallelIterator, IntoParallelRefIterator, IndexedParallelIterator, IntoParallelIterator};
+use rayon::prelude::{ParallelIterator, IntoParallelIterator};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::metal::msm::sort_buckets::sort_buckets_indices;
@@ -118,20 +118,10 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     let mut bases_limbs = vec![0u32; points.len() * NP];
 
     // Fill scalars_limbs using write_u32_limbs in parallel
-    scalars
-        .par_iter()
-        .zip(scalars_limbs.par_chunks_mut(NS))
-        .for_each(|(scalar, chunk)| {
-            scalar.write_u32_limbs(chunk.try_into().unwrap());
-        });
+    scalars.write_u32_limbs(scalars_limbs.as_mut_slice());
 
     // Fill bases_limbs using write_u32_limbs in parallel
-    points
-        .par_iter()
-        .zip(bases_limbs.par_chunks_mut(NP))
-        .for_each(|(point, chunk)| {
-            point.write_u32_limbs(chunk.try_into().unwrap());
-        });
+    points.write_u32_limbs(bases_limbs.as_mut_slice());
 
     log::debug!("Encoding flatten time: {:?}", flatten_start.elapsed());
 
@@ -292,19 +282,69 @@ where
         .unwrap()
 }
 
-pub fn best_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
-    points: &[P],
-    scalars: &[S],
-) -> Result<P, MetalError> {
+#[cfg(feature = "h2c")]
+pub fn best_msm<C, P, S>(scalars: &[C::Scalar], points: &[C]) -> C
+where
+    C: halo2curves::CurveAffine,         // Your curve type
+    P: PointGPU<24> + Sync, // GPU-compatible point type
+    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+{
+    // Step 1: Convert scalars to GPU representation
+    let gpu_scalars: &[S] = unsafe {
+        assert_eq!(std::mem::size_of::<C::Scalar>(), std::mem::size_of::<S>(),
+            "C::Scalar and S must have the same size for reinterpret casting");
+        assert_eq!(std::mem::align_of::<C::Scalar>(), std::mem::align_of::<S>(),
+            "C::Scalar and S must have the same alignment for reinterpret casting");
+        std::slice::from_raw_parts(
+            scalars.as_ptr() as *const S,
+            scalars.len(),
+        )
+    };
+
+    // Step 2: Convert points to GPU representation
+    let gpu_points: &[P] = unsafe {
+        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<P>(),
+            "C and P must have the same size for reinterpret casting");
+        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<P>(),
+            "C and P must have the same alignment for reinterpret casting");
+        std::slice::from_raw_parts(
+            points.as_ptr() as *const P,
+            points.len(),
+        )
+    };
+
+    // Step 3: Setup GPU
+    let setup_time = Instant::now();
     let mut config = setup_metal_state();
-    let instance = encode_instances(points, scalars, &mut config, None);
-    exec_metal_commands(&config, instance)
+    log::debug!("Config Setup Time: {:?}", setup_time.elapsed());
+
+    // Step 4: Perform the GPU computation
+    let compute_time = Instant::now();
+    let instance = encode_instances(gpu_points, gpu_scalars, &mut config, None);
+    let gpu_result: P = exec_metal_commands(&config, instance).unwrap();
+    log::debug!("Pure Compute Time: {:?}", compute_time.elapsed());
+
+
+    // Step 5: Convert GPU result to CPU representation
+    let prep_result_time = Instant::now();
+    let cpu_result: C = unsafe {
+        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<P>(),
+            "C and P must have the same size for reinterpret casting");
+        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<P>(),
+            "C and P must have the same alignment for reinterpret casting");
+        std::ptr::read(&gpu_result as *const P as *const C)
+    };
+    log::debug!("Prep Result time: {:?}", prep_result_time.elapsed());
+
+
+    cpu_result
 }
+
 
 #[cfg(test)]
 mod tests {
-    const LOG_INSTANCE_SIZE: u32 = 18;
-    const NUM_INSTANCE: u32 = 10;
+    const LOG_INSTANCE_SIZE: u32 = 20;
+    const NUM_INSTANCE: u32 = 1;
 
     #[cfg(feature = "ark")]
     mod ark {
@@ -379,7 +419,8 @@ mod tests {
         use ark_std::cfg_into_iter;
         use halo2curves::group::Curve;
         use rand::rngs::OsRng;
-        use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2G};
+        use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
+        use crate::metal::best_msm;
         use crate::metal::msm::{metal_msm, setup_metal_state};
         use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
         use crate::metal::tests::init_logger;
@@ -400,11 +441,36 @@ mod tests {
                 let scalars = &instance.scalars;
 
                 let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
-                // let arkworks_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
                 let metal_msm = metal_msm::<H2G, H2Fr>(&points[..], &scalars[..], &mut metal_config).unwrap();
                 assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
+                log::info!(
+                    "(pass) {}th instance of size 2^{} is correctly computed",
+                    i, LOG_INSTANCE_SIZE
+                );
+            }
+        }
+
+
+        #[test]
+        fn test_best_msm_medium_sample_h2c() {
+            init_logger();
+
+            let rng = OsRng::default();
+
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+
+            for (i, instance) in instances.iter().enumerate() {
+                let points = &instance.points;
+                // map each scalar to a ScalarField
+                let scalars = &instance.scalars;
+
+                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
+                let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
+
+                let metal_msm = best_msm::<H2GAffine, H2GAffine, H2Fr>(scalars, &affine_points);
+                assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
                     i, LOG_INSTANCE_SIZE
