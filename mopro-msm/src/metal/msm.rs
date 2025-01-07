@@ -9,7 +9,6 @@ use crate::metal::abstraction::{
     errors::MetalError,
     state::*,
 };
-use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::Instant;
 use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
@@ -95,7 +94,7 @@ pub fn encode_instances<P: ToLimbs<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP
 ) -> MetalMsmInstance {
     let modulus_bit_size = S::MODULUS_BIT_SIZE;
 
-    let instances_size = ark_std::cmp::min(bases.len(), scalars.len());
+    let instances_size = bases.len().min(scalars.len());
     let window_size = if let Some(window_size) = window_size {
         window_size
     } else {
@@ -218,7 +217,7 @@ where
 
     (0..amount_of_sub_instances).into_par_iter().for_each(|i| {
         let start = i * chunk_size;
-        let end = ark_std::cmp::min((i + 1) * chunk_size, points.len());
+        let end = ((i + 1) * chunk_size).min(points.len());
 
         let sub_points = &points[start..end];
         let sub_scalars = &scalars[start..end];
@@ -377,9 +376,9 @@ mod tests {
 
     #[cfg(feature = "h2c")]
     mod h2c {
-        use ark_std::cfg_into_iter;
         use halo2curves::group::Curve;
         use rand::rngs::OsRng;
+        use rayon::prelude::{IntoParallelIterator, ParallelIterator};
         use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
         use crate::metal::best_msm;
         use crate::metal::msm::{metal_msm, setup_metal_state};
@@ -401,7 +400,7 @@ mod tests {
                 // map each scalar to a ScalarField
                 let scalars = &instance.scalars;
 
-                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
+                let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
                 let metal_msm = metal_msm::<H2G, H2Fr>(&points[..], &scalars[..], &mut metal_config).unwrap();
@@ -427,7 +426,7 @@ mod tests {
                 // map each scalar to a ScalarField
                 let scalars = &instance.scalars;
 
-                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
+                let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
                 let metal_msm = best_msm::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);

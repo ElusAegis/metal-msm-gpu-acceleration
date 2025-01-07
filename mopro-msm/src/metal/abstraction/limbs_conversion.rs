@@ -393,6 +393,7 @@ mod test {
     use ark_ec::{AffineRepr, CurveGroup};
     #[cfg(feature = "ark")]
     use ark_ff::Field;
+    #[cfg(feature = "ark")]
     use ark_std::UniformRand;
     #[cfg(feature = "h2c")]
     use halo2curves::{
