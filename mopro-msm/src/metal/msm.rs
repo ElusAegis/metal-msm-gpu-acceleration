@@ -13,7 +13,7 @@ use crate::metal::abstraction::{
 use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::Instant;
-use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
+use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
 use crate::utils::preprocess::MsmInstance;
 use metal::*;
 use objc::rc::autoreleasepool;
@@ -89,14 +89,14 @@ pub fn setup_metal_state() -> MetalMsmConfig {
 
 
 pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP: usize, const NS: usize>(
-    points: &[P],
+    bases: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
     window_size: Option<u32>
 ) -> MetalMsmInstance {
     let modulus_bit_size = S::MODULUS_BIT_SIZE;
 
-    let instances_size = ark_std::cmp::min(points.len(), scalars.len());
+    let instances_size = ark_std::cmp::min(bases.len(), scalars.len());
     let window_size = if let Some(window_size) = window_size {
         window_size
     } else {
@@ -110,29 +110,12 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     let window_starts: Vec<u32> = (0..modulus_bit_size as u32).step_by(window_size as usize).collect();
     let window_num = window_starts.len();
 
-    // flatten scalar and base to Vec<u32> for GPU usage
-    let flatten_start = Instant::now();
-
-    // Preallocate scalars and bases
-    let mut scalars_limbs = vec![0u32; scalars.len() * NS];
-    let mut bases_limbs = vec![0u32; points.len() * NP];
-
-    // Fill scalars_limbs using write_u32_limbs in parallel
-    scalars.write_u32_limbs(scalars_limbs.as_mut_slice());
-
-    // Fill bases_limbs using write_u32_limbs in parallel
-    points.write_u32_limbs(bases_limbs.as_mut_slice());
-
-    log::debug!("Encoding flatten time: {:?}", flatten_start.elapsed());
-
-
     // store params to GPU shared memory
-    let store_params_start = Instant::now();
     let window_size_buffer = config.state.alloc_buffer_data(&[window_size as u32]);
     let window_num_buffer = config.state.alloc_buffer_data(&[window_num as u32]);
     let instances_size_buffer = config.state.alloc_buffer_data(&[instances_size as u32]);
-    let scalar_buffer = config.state.alloc_buffer_data(&scalars_limbs);
-    let base_buffer = config.state.alloc_buffer_data(&bases_limbs);
+    let scalar_buffer = config.state.alloc_buffer_data_direct(&scalars);
+    let base_buffer = config.state.alloc_buffer_data_direct(&bases);
     let buckets_matrix_buffer = config
         .state
         .alloc_buffer::<u32>(buckets_size * window_num * 8 * 3);
@@ -144,10 +127,6 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     let buckets_indices_buffer = config
         .state
         .alloc_buffer::<u32>(instances_size * window_num * 2);
-    log::debug!("Store params time: {:?}", store_params_start.elapsed());
-
-    // // debug
-    // let debug_buffer = config.state.alloc_buffer::<u32>(2048);
 
     MetalMsmInstance {
         data: MetalMsmData {

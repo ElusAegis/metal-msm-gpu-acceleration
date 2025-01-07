@@ -4,6 +4,7 @@ use crate::metal::abstraction::errors::MetalError;
 
 use core::{ffi, mem};
 use std::env;
+use crate::metal::abstraction::limbs_conversion::ToLimbs;
 
 /// Structure for abstracting basic calls to a Metal device and saving the state. Used for
 /// implementing GPU parallel computations in Apple machines.
@@ -90,6 +91,30 @@ impl MetalState {
             (data.len() * size) as u64,
             MTLResourceOptions::StorageModeShared, // TODO: use managed mode
         )
+    }
+
+    pub fn alloc_buffer_data_direct<T, const N: usize>(&self, items: &[T]) -> metal::Buffer
+    where
+        T: ToLimbs<N> + Sync,
+    {
+        let num_items = items.len();
+        let limb_size = mem::size_of::<u32>() * N;
+        let total_size = num_items * limb_size;
+
+        // Create a GPU buffer with shared storage
+        let buffer = self.device.new_buffer(
+            total_size as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+
+        // Safety: Ensure the buffer's contents are safe to access as mutable
+        let buffer_ptr = buffer.contents() as *mut u32;
+
+        unsafe {
+            items.write_u32_limbs(std::slice::from_raw_parts_mut(buffer_ptr, N * num_items));
+        }
+
+        buffer
     }
 
     pub fn set_bytes<T>(index: usize, data: &[T], encoder: &ComputeCommandEncoderRef) {
