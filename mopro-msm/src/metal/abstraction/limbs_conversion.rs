@@ -310,7 +310,9 @@ pub mod h2c {
 
     impl ToLimbs<24> for H2GAffine {
         fn write_u32_limbs(&self, out: &mut [u32]) {
-            self.to_curve().write_u32_limbs(out);
+            self.x.write_u32_limbs(&mut out[0..8]);
+            self.y.write_u32_limbs(&mut out[8..16]);
+            H2Fq::one().write_u32_limbs(&mut out[16..24]);
         }
     }
 
