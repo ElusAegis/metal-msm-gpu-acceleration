@@ -47,7 +47,7 @@ pub fn bucket_wise_accumulation(
         .pipelines
         .bucket_wise_accumulation
         .max_total_threads_per_threadgroup()
-        .min(128) // The maximum number of threads per group due to shared memory limit
+        .min(64) // The maximum number of threads per group due to shared memory limit
         .min(actual_threads)
         as u64;
 

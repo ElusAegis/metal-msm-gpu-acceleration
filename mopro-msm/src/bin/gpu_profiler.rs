@@ -9,7 +9,7 @@ use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr , ArkG as
 #[cfg(feature = "h2c")]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr , H2G as G, H2GAffine as GAffine};
 #[cfg(feature = "h2c")]
-use mopro_msm::metal::best_msm;
+use mopro_msm::metal::msm::{gpu_msm_h2c, gpu_with_cpu};
 use mopro_msm::metal::msm::{metal_msm_parallel};
 #[cfg(all(feature = "ark", not(feature = "h2c")))]
 use mopro_msm::metal::msm::{setup_metal_state, metal_msm};
@@ -64,7 +64,11 @@ fn main() {
             }
             #[cfg(feature = "h2c")]
             "gpu" => {
-                let _ = best_msm::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
+                let _ = gpu_msm_h2c::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
+            }
+            #[cfg(feature = "h2c")]
+            "gpu_cpu" => {
+                let _ = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
             }
             "par_gpu" => {
                 let target_msm_log_size = args.get(3).and_then(|arg| arg.parse::<usize>().ok());

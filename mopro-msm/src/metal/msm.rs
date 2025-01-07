@@ -18,7 +18,7 @@ use rayon::prelude::{ParallelIterator, IntoParallelIterator};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::metal::msm::final_accumulation::final_accumulation;
 use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-use crate::metal::msm::sort_buckets::sort_buckets_indices;
+use crate::metal::msm::sort_buckets::{sort_buckets_indices, CPU_SORT_FINISHED};
 use crate::metal::msm::sum_reduction::sum_reduction;
 
 pub struct MetalMsmData {
@@ -242,7 +242,7 @@ where
 }
 
 #[cfg(feature = "h2c")]
-pub fn best_msm<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
+pub fn gpu_msm_h2c<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
 where
     C: halo2curves::CurveAffine,         // Your curve type
     PIN: ToLimbs<24> + Sync, // GPU-compatible point type
@@ -298,6 +298,56 @@ where
     use halo2curves::group::Curve;
 
     cpu_result.to_affine()
+}
+
+#[cfg(feature = "h2c")]
+pub fn gpu_with_cpu<C, PIN, POUT, S>(scalar: &[C::Scalar], points: &[C]) -> C
+where
+    C: halo2curves::CurveAffine,         // Your curve type
+    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
+    POUT: PointGPU<24> + Sync, // GPU-compatible point type
+    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+{
+
+    // Split the scalar and points into two halves
+    // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
+    let (scalar_1, scalar_2) = scalar.split_at(scalar.len() * 3 / 5);
+    let (point_1, point_2) = points.split_at(points.len() * 3 / 5);
+
+    // Use Rayon to run GPU and CPU tasks in parallel
+    let (gpu_result, cpu_result) = rayon::join(
+        || gpu_msm_h2c::<C, PIN, POUT, S>(scalar_1, point_1),
+        || {
+            // Wait for the GPU MSM to pass the sorting stage before starting the CPU MSM
+            // This is because the sorting is CPU bound, and we want to avoid CPU contention
+            let (lock, cvar) = &*CPU_SORT_FINISHED.clone();
+
+            // Wait for the GPU thread to unlock the value
+            let mut started = lock.lock().unwrap();
+            while !*started {
+                started = cvar.wait(started).unwrap();
+            }
+            // Reset the value for the next iteration
+            *started = false;
+
+            halo2curves::msm::msm_best(scalar_2, point_2)
+        },
+    );
+
+    // Combine GPU and CPU results
+    use halo2curves::group::Curve;
+    (gpu_result + cpu_result.into()).to_affine()
+}
+
+#[cfg(feature = "h2c")]
+pub fn msm_best<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
+where
+    C: halo2curves::CurveAffine,         // Your curve type
+    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
+    POUT: PointGPU<24> + Sync, // GPU-compatible point type
+    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+{
+    gpu_with_cpu::<C, PIN, POUT, S>(scalars, points)
 }
 
 
@@ -380,8 +430,7 @@ mod tests {
         use rand::rngs::OsRng;
         use rayon::prelude::{IntoParallelIterator, ParallelIterator};
         use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
-        use crate::metal::best_msm;
-        use crate::metal::msm::{metal_msm, setup_metal_state};
+        use crate::metal::msm::{gpu_msm_h2c, gpu_with_cpu, metal_msm, setup_metal_state};
         use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
         use crate::metal::tests::init_logger;
         use crate::utils::preprocess::get_or_create_msm_instances;
@@ -429,7 +478,32 @@ mod tests {
                 let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
-                let metal_msm = best_msm::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
+                let metal_msm = gpu_msm_h2c::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
+                assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
+                log::info!(
+                    "(pass) {}th instance of size 2^{} is correctly computed",
+                    i, LOG_INSTANCE_SIZE
+                );
+            }
+        }
+
+        #[test]
+        fn test_gpu_cpu_correctness_medium_sample_h2c() {
+                        init_logger();
+
+            let rng = OsRng::default();
+
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+
+            for (i, instance) in instances.iter().enumerate() {
+                let points = &instance.points;
+                // map each scalar to a ScalarField
+                let scalars = &instance.scalars;
+
+                let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
+                let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
+
+                let metal_msm = gpu_with_cpu::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
                 assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",

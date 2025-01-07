@@ -5,8 +5,6 @@ use ark_ec::{CurveGroup, VariableBaseMSM};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(feature = "h2c")]
 use halo2curves::group::{Curve};
-#[cfg(feature = "h2c")]
-use halo2curves::msm::msm_best;
 use rand::rngs::OsRng;
 #[cfg(feature = "ark")]
 use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
@@ -23,7 +21,14 @@ use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 #[cfg(feature = "h2c")]
 pub fn msm_h2c_cpu(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
     for instance in instances {
-        let _ = msm_best(&instance.1, &instance.0);
+        let _ = halo2curves::msm::msm_best(&instance.1, &instance.0);
+    }
+}
+
+#[cfg(feature = "h2c")]
+pub fn msm_h2c_gpu_best(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
+    for instance in instances {
+        let _ = mopro_msm::metal::msm_best::<H2GAffine, H2GAffine, H2G, H2Fr>(&instance.1, &instance.0);
     }
 }
 
@@ -110,6 +115,12 @@ fn benchmark_msm(criterion: &mut Criterion) {
     #[cfg(feature = "ark")]
     bench_group.bench_function("msm_ark_cpu", |b| {
         b.iter(|| msm_ark_cpu(&instances_ark))
+    });
+
+    // Benchmark Best Halo2Curves GPU implementation
+    #[cfg(feature = "h2c")]
+    bench_group.bench_function("msm_h2c_gpu_best", |b| {
+        b.iter(|| msm_h2c_gpu_best(&instances_h2c))
     });
 
     // Benchmark GPU implementation

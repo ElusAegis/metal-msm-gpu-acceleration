@@ -4,4 +4,4 @@ pub mod msm;
 pub(crate) mod tests;
 
 #[cfg(feature = "h2c")]
-pub use msm::best_msm;
+pub use msm::msm_best;

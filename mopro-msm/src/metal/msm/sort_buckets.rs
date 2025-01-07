@@ -1,5 +1,12 @@
+use std::sync::{Arc, Condvar, Mutex};
 use rayon::prelude::ParallelSliceMut;
 use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+
+lazy_static::lazy_static! {
+    /// Used to notify other processes that the Sort stage has finished in GPU MSM computation.
+    /// Sorting is CPU intensive and we want to avoid CPU contention with other processes.
+    pub static ref CPU_SORT_FINISHED: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+}
 
 /// Executes the `sort_buckets` Metal shader kernel.
 /// Sorts the `(uint2)` data in `buckets_indices_buffer` by `.x` ascending.
@@ -34,6 +41,13 @@ pub fn sort_buckets_indices(
 
     // At this point, 'pair_slice' is sorted in place in GPU-shared memory.
     // Hence, we can stop here.
+
+
+    // Unlock the static value and notify the CPU thread
+    let (lock, cvar) = &*CPU_SORT_FINISHED.clone();
+    let mut started = lock.lock().unwrap();
+    *started = true; // Unlock the value
+    cvar.notify_one(); // Notify the waiting CPU thread
 }
 
 
