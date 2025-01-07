@@ -92,7 +92,7 @@ pub fn sum_reduction(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature="ark"))] // FIXME - make the tests also work when h2c feature is active
 mod tests {
     use std::ops::{Add, Mul};
     use ark_ec::CurveGroup;

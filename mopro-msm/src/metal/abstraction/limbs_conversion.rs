@@ -1,4 +1,5 @@
 use rand::RngCore;
+use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
 
 pub trait ToLimbs<const N: usize> {
     /// Writes this object’s limbs directly into `out`.
@@ -10,6 +11,29 @@ pub trait ToLimbs<const N: usize> {
         let mut arr = [0u32; N];
         self.write_u32_limbs(&mut arr);
         arr.to_vec()
+    }
+}
+
+impl<P, const N: usize> ToLimbs<N> for &[P]
+where
+    P: ToLimbs<N> + Sync,
+{
+    fn write_u32_limbs(&self, out: &mut [u32]) {
+        assert_eq!(out.len(), self.len() * N, "Output buffer size is incorrect");
+
+        // Use Rayon to parallelize over larger chunks
+        self.par_iter()
+            .zip(out.par_chunks_mut(N))
+            .for_each(|(item, chunk)| {
+                item.write_u32_limbs(chunk);
+            });
+    }
+
+    /// Default method: returns a `[u32; N]` by internally calling `write_u32_limbs`.
+    fn to_u32_limbs(&self) -> Vec<u32> {
+        let mut vec = vec![0u32; self.len() * N];
+        self.write_u32_limbs(vec.as_mut_slice());
+        vec
     }
 }
 
@@ -42,10 +66,10 @@ pub trait PointGPU<const N: usize> : FromLimbs + ToLimbs<N> {
 
 #[cfg(feature = "ark")]
 pub mod ark {
-    use ark_ff::{BigInteger256, PrimeField};
     use super::{FromLimbs, PointGPU, ScalarGPU, ToLimbs};
+    use ark_ff::{BigInteger256, PrimeField};
 
-    pub use ark_bn254::{Fq as ArkFq, G1Projective as ArkG, Fr as ArkFr, G1Affine as ArkGAffine};
+    pub use ark_bn254::{Fq as ArkFq, Fr as ArkFr, G1Affine as ArkGAffine, G1Projective as ArkG};
     use ark_ec::{AffineRepr, CurveGroup};
     use ark_std::UniformRand;
     use rand::RngCore;
@@ -168,40 +192,119 @@ pub mod h2c {
     use super::{FromLimbs, PointGPU, ScalarGPU, ToLimbs};
     use halo2curves::CurveExt;
 
-    pub use halo2curves::bn256::{Fq as H2Fq, Fr as H2Fr, G1 as H2G, G1Affine as H2GAffine};
-    use halo2curves::ff::{Field};
-    use halo2curves::group::{Curve, Group};
+    pub use halo2curves::bn256::{Fq as H2Fq, Fr as H2Fr, G1Affine as H2GAffine, G1 as H2G};
+    use halo2curves::ff::Field;
     use halo2curves::group::prime::PrimeCurveAffine;
+    use halo2curves::group::{Curve, Group};
     use halo2curves::serde::SerdeObject;
     use rand::RngCore;
 
+
+    use std::io::Write;
+
+    /// A custom writer that writes directly into a fixed-size byte buffer.
+    struct SliceWriter<'a> {
+        buffer: &'a mut [u8; 32],
+        pos: usize,
+    }
+
+    impl<'a> SliceWriter<'a> {
+        /// Creates a new `SliceWriter` instance.
+        fn new(buffer: &'a mut [u8; 32]) -> Self {
+            SliceWriter { buffer, pos: 0 }
+        }
+    }
+
+    impl<'a> Write for SliceWriter<'a> {
+        fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, std::io::Error> {
+            let available = self.buffer.len() - self.pos;
+            let to_write = buf.len().min(available);
+            self.buffer[self.pos..self.pos + to_write].copy_from_slice(&buf[..to_write]);
+            self.pos += to_write;
+            Ok(to_write)
+        }
+
+        fn flush(&mut self) -> std::result::Result<(), std::io::Error> {
+            Ok(())
+        }
+    }
+
+    #[inline(always)]
+    fn bytes_to_u32_reverse(input: &[u8], out: &mut [u32]) {
+        out[0] = (input[28] as u32)
+            | ((input[29] as u32) << 8)
+            | ((input[30] as u32) << 16)
+            | ((input[31] as u32) << 24);
+
+        out[1] = (input[24] as u32)
+            | ((input[25] as u32) << 8)
+            | ((input[26] as u32) << 16)
+            | ((input[27] as u32) << 24);
+
+        out[2] = (input[20] as u32)
+            | ((input[21] as u32) << 8)
+            | ((input[22] as u32) << 16)
+            | ((input[23] as u32) << 24);
+
+        out[3] = (input[16] as u32)
+            | ((input[17] as u32) << 8)
+            | ((input[18] as u32) << 16)
+            | ((input[19] as u32) << 24);
+
+        out[4] = (input[12] as u32)
+            | ((input[13] as u32) << 8)
+            | ((input[14] as u32) << 16)
+            | ((input[15] as u32) << 24);
+
+        out[5] = (input[8] as u32)
+            | ((input[9] as u32) << 8)
+            | ((input[10] as u32) << 16)
+            | ((input[11] as u32) << 24);
+
+        out[6] = (input[4] as u32)
+            | ((input[5] as u32) << 8)
+            | ((input[6] as u32) << 16)
+            | ((input[7] as u32) << 24);
+
+        out[7] = (input[0] as u32)
+            | ((input[1] as u32) << 8)
+            | ((input[2] as u32) << 16)
+            | ((input[3] as u32) << 24);
+    }
+
     impl ToLimbs<8> for H2Fr {
-        fn write_u32_limbs(&self, out: &mut [u32]) {
+        fn write_u32_limbs(&self, mut out: &mut [u32]) {
             let input = self.to_bytes(); // 32 bytes
             // Fill out[] in reverse order of 4-byte chunks
-            for (i, chunk) in input.chunks_exact(4).rev().enumerate() {
-                out[i] = u32::from_le_bytes(chunk.try_into().unwrap());
-            }
+            bytes_to_u32_reverse(&input, &mut out);
         }
     }
 
     impl ToLimbs<8> for H2Fq {
-        fn write_u32_limbs(&self, out: &mut [u32]) {
-            let input = self.to_raw_bytes(); // 32 bytes
-            for (i, chunk) in input.chunks_exact(4).rev().enumerate() {
-                out[i] = u32::from_le_bytes(chunk.try_into().unwrap());
-            }
+    fn write_u32_limbs(&self, out: &mut [u32]) {
+        // Ensure the output buffer has enough space
+        debug_assert!(out.len() >= 8, "Output buffer must have at least 8 elements");
+
+        // Create a fixed-size byte array
+        let mut buffer = [0u8; 32];
+
+        // Create a SliceWriter to write directly into the buffer
+        {
+            let mut writer = SliceWriter::new(&mut buffer);
+            self.write_raw(&mut writer).expect("Failed to write raw bytes");
         }
+
+        // Convert the byte buffer to limbs using the optimized utility function
+        bytes_to_u32_reverse(&buffer, out);
     }
+}
 
 
     impl ToLimbs<24> for H2G {
         fn write_u32_limbs(&self, out: &mut [u32]) {
-            println!("Before: {:?}", out);
             self.x.write_u32_limbs(&mut out[0..8]);
             self.y.write_u32_limbs(&mut out[8..16]);
             self.z.write_u32_limbs(&mut out[16..24]);
-            println!("After: {:?}", out);
         }
     }
 
@@ -258,9 +361,24 @@ pub mod h2c {
         }
     }
 
+    impl FromLimbs for H2GAffine {
+        const U32_SIZE: usize = 24;
+
+        fn from_u32_limbs(limbs: &[u32]) -> Self {
+            H2G::from_u32_limbs(limbs).to_affine()
+        }
+
+    }
+
     impl PointGPU<24> for H2G {
         fn random(rng: &mut impl RngCore) -> Self {
             <Self as Group>::random(rng).to_affine().to_curve()
+        }
+    }
+
+    impl PointGPU<24> for H2GAffine {
+        fn random(rng: &mut impl RngCore) -> Self {
+            <H2G as Group>::random(rng).to_affine()
         }
     }
 }
@@ -270,10 +388,13 @@ mod test {
     #![allow(unused_imports)]
 
     use super::{FromLimbs, ToLimbs};
+    #[cfg(feature = "ark")]
     use crate::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
     #[cfg(feature = "h2c")]
     use crate::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
+    #[cfg(feature = "ark")]
     use ark_ec::{AffineRepr, CurveGroup};
+    #[cfg(feature = "ark")]
     use ark_ff::Field;
     use ark_std::UniformRand;
     #[cfg(feature = "h2c")]
@@ -283,11 +404,12 @@ mod test {
         group::{Curve, Group}
     };
     use proptest::arbitrary::any;
-    use proptest::prelude::ProptestConfig;
+    use proptest::prelude::{prop, ProptestConfig};
     use proptest::{prop_assert_eq, prop_compose, proptest};
     use rand::prelude::StdRng;
     use rand::SeedableRng;
     use std::ops::Mul;
+    use crate::metal::tests::init_logger;
 
     #[cfg(feature = "h2c")]
     prop_compose! {
@@ -377,6 +499,59 @@ proptest! {
             let limbs = f.to_u32_limbs();
             let f_prime = ArkFq::from_u32_limbs(&limbs);
             prop_assert_eq!(f, f_prime);
+        }
+
+        #[cfg(feature = "ark")]
+        #[test]
+        fn test_list_serialisation_to_limbs_ark(fs in prop::collection::vec(rand_ark_fq_element(), 1..100)) {
+            init_logger();
+
+            // Convert the list of Fq elements to limbs using the &[P] implementation
+            let list_limbs = fs.as_slice().to_u32_limbs();
+
+            // Manually serialize each element and collect the limbs
+            let manual_limbs: Vec<u32> = fs
+                .iter()
+                .flat_map(|f| f.to_u32_limbs())
+                .collect();
+
+            // Check that the serialized outputs match
+            prop_assert_eq!(list_limbs.clone(), manual_limbs);
+
+            // Deserialize the limbs back into Fq elements
+            let fs_prime: Vec<ArkFq> = list_limbs
+                .chunks_exact(8) // Assuming ArkFq has 8 limbs
+                .map(|chunk| ArkFq::from_u32_limbs(chunk))
+                .collect();
+
+            // Check that the original list and the deserialized list are equal
+            prop_assert_eq!(fs, fs_prime);
+        }
+
+        #[cfg(feature = "h2c")]
+        #[test]
+        fn test_list_serialisation_to_limbs_h2c(fs in prop::collection::vec(rand_h2c_fq_element(), 1..100)) {
+            init_logger();
+            // Convert the list of Fq elements to limbs using the &[P] implementation
+            let list_limbs = fs.as_slice().to_u32_limbs();
+
+            // Manually serialize each element and collect the limbs
+            let manual_limbs: Vec<u32> = fs
+                .iter()
+                .flat_map(|f| f.to_u32_limbs())
+                .collect();
+
+            // Check that the serialized outputs match
+            prop_assert_eq!(list_limbs.clone(), manual_limbs);
+
+            // Deserialize the limbs back into Fq elements
+            let fs_prime: Vec<H2Fq> = list_limbs
+                .chunks_exact(8) // Assuming ArkFq has 8 limbs
+                .map(|chunk| H2Fq::from_u32_limbs(chunk))
+                .collect();
+
+            // Check that the original list and the deserialized list are equal
+            prop_assert_eq!(fs, fs_prime);
         }
 
         #[cfg(all(feature = "h2c", feature = "ark"))]

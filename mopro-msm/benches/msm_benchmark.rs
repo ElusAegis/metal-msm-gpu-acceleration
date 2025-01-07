@@ -1,5 +1,6 @@
-
+use std::ops::Add;
 use std::time::Duration;
+#[cfg(feature = "ark")]
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(feature = "h2c")]
@@ -7,9 +8,14 @@ use halo2curves::group::{Curve};
 #[cfg(feature = "h2c")]
 use halo2curves::msm::msm_best;
 use rand::rngs::OsRng;
+#[cfg(feature = "ark")]
 use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
 #[cfg(feature = "h2c")]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
+#[cfg(feature = "ark")]
+use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr, ArkG as G};
+#[cfg(all(feature = "h2c", not(feature = "ark")))]
+use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
 use mopro_msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
 use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
@@ -21,6 +27,7 @@ pub fn msm_h2c_cpu(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
     }
 }
 
+#[cfg(feature = "ark")]
 pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
     for instance in instances {
         let _ = ArkG::msm(&instance.0, &instance.1).unwrap();
@@ -37,8 +44,11 @@ fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmIn
     }
 }
 
-fn msm_gpu_par(instances: &Vec<MsmInstance<ArkG, ArkFr>>, target_msm_log_size: Option<usize>) {
-
+fn msm_gpu_par<P, S>(instances: &Vec<MsmInstance<P, S>>, target_msm_log_size: Option<usize>)
+where
+    P: PointGPU<24> + Add<P, Output = P> + Send + Sync + Clone,
+    S: ScalarGPU<8> + Send + Sync,
+{
     for instance in instances {
         let _ = metal_msm_parallel(instance, target_msm_log_size);
     }
@@ -59,7 +69,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
     const LOG_INSTANCE_SIZE: u32 = 20;
     const NUM_INSTANCES: u32 = 5;
 
-    let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
+    let instances = get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
     #[cfg(feature = "h2c")]
     let instances_h2c = instances
         .iter()
@@ -75,6 +85,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
             )
         })
         .collect::<Vec<_>>();
+    #[cfg(feature = "ark")]
     let instances_ark = instances
         .iter()
         .map(|instance| {
@@ -96,6 +107,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
     });
 
     // Benchmark Arkworks CPU implementation
+    #[cfg(feature = "ark")]
     bench_group.bench_function("msm_ark_cpu", |b| {
         b.iter(|| msm_ark_cpu(&instances_ark))
     });
@@ -123,7 +135,7 @@ fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
     const LOG_INSTANCE_SIZE: u32 = 16;
     const NUM_INSTANCES: u32 = 5;
 
-    let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
+    let instances = get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
 
     let target_msm_sizes = 11..16usize;
 

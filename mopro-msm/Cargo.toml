@@ -59,3 +59,7 @@ harness = false
 [[bench]]
 name = "sort_buckets_indices_benchmark"
 harness = false
+
+[[bench]]
+name = "to_u32_limbs_benchmark"
+harness = false

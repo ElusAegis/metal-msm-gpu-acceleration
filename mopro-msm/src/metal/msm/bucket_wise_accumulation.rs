@@ -109,7 +109,7 @@ pub fn bucket_wise_accumulation(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature="ark"))]
 mod tests {
     use std::ops::Add;
     use super::*;

@@ -40,7 +40,7 @@ pub(crate) fn prepare_buckets_indices(
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature="ark"))]
 mod test {
     use std::collections::HashSet;
     use ark_ff::{BigInt, BigInteger, PrimeField};
