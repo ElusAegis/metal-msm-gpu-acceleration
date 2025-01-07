@@ -35,9 +35,9 @@ fn sum_reduction_partial(
         .pipelines
         .sum_reduction_partial
         .max_total_threads_per_threadgroup()
-        .min(64);  // Threadgroup shared memory limit - TODO - attempt to increase
+        .min(128); // Some heuristic
     // For example:
-    let threads_per_group = max_threads; // or pick some heuristic
+    let threads_per_group = max_threads;
 
     // Prepare small buffers for the kernel’s constants
     let buckets_size_buffer  = config.state.alloc_buffer_data(&[params.buckets_size]);
@@ -67,7 +67,7 @@ fn sum_reduction_partial(
 
         // We must set threadgroup memory lengths for the arrays: sums, sos, counts.
         // sums and sos each hold `threads_per_group` SerBn254Points:
-        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * threads_per_group;
+        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * (threads_per_group / 2);
 
         cmd_encoder.set_threadgroup_memory_length(0, shared_memory_length);
 
@@ -103,7 +103,7 @@ pub fn sum_reduction_final(
         .pipelines
         .sum_reduction_final
         .max_total_threads_per_threadgroup()
-        .min(64); // Threadgroup shared memory limit - TODO - attempt to increase
+        .min(32); // Some heuristic
     // Suppose we do:
     let threads_per_group = max_threads.min(groups_per_window as u64).max(1);
 
@@ -158,19 +158,19 @@ pub fn sum_reduction(
     config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
 ) {
-    let buckets_per_threadgroup = 4096; // some heuristic
+    let buckets_per_threadgroup = 4096 * 4; // some heuristic
     let groups_per_window = (instance.params.buckets_size + 1).div_ceil(buckets_per_threadgroup);
 
     // Stage 1: Partial reduction
     let partial_reduction_start = Instant::now();
     let partial_results_buffer = sum_reduction_partial(config, instance, groups_per_window)
         .expect("sum_reduction_partial failed");
-    log::debug!("Partial reduction took {:?}", partial_reduction_start.elapsed());
+    log::debug!("(reduction) Partial reduction took {:?}", partial_reduction_start.elapsed());
 
     // Stage 2: Final reduction
     let final_reduction_start = Instant::now();
     sum_reduction_final(config, instance, &partial_results_buffer, groups_per_window);
-    log::debug!("Final reduction took {:?}", final_reduction_start.elapsed());
+    log::debug!("(reduction) Final reduction took {:?}", final_reduction_start.elapsed());
 }
 
 #[cfg(all(test, feature="ark"))] // FIXME - make the tests also work when h2c feature is active

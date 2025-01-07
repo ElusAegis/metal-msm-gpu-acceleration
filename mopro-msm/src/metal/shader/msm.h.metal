@@ -374,53 +374,89 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
     }
     uint local_count = (end_idx > start_idx) ? (end_idx - start_idx) : 0;
 
-    // Store partials into threadgroup
-    shared_results[t_id].sum   = toSerBn254Point(local_sum);
-    shared_results[t_id].sos   = toSerBn254Point(local_sos);
-    shared_results[t_id].count = local_count;
+    // ------------------------------------------------------------
+    // 2) Store partial results
+    //    - Even threads store locally
+    //    - Odd threads store in shared memory
+    // ------------------------------------------------------------
+    PartialReductionResult local_result;
+    local_result.sum   = toSerBn254Point(local_sum);
+    local_result.sos   = toSerBn254Point(local_sos);
+    local_result.count = local_count;
+
+    if (t_id % 2 == 1) { // Odd threads store their results
+        shared_results[t_id / 2].sum = local_result.sum;
+        shared_results[t_id / 2].sos = local_result.sos;
+        shared_results[t_id / 2].count = local_result.count;
+    }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // ------------------------------------------------------------
-    // 2) Tree reduction within the group (combine S, SoS, count)
+    // 3) Tree reduction within the group (combine S, SoS, count)
+    //    Adjusted for half the shared memory
     // ------------------------------------------------------------
     for (uint32_t offset = 1; offset < threads_per_tg; offset <<= 1) {
-        if (t_id + offset < threads_per_tg) {
-            Point s_left  = fromSerBn254Point(shared_results[t_id].sum);
-            Point s_right = fromSerBn254Point(shared_results[t_id + offset].sum);
+        if (t_id + offset < threads_per_tg && t_id % 2 == 0) {
+            // Read from shared memory
 
-            Point sos_left  = fromSerBn254Point(shared_results[t_id].sos);
-            Point sos_right = fromSerBn254Point(shared_results[t_id + offset].sos);
+            Point s_left;
+            Point s_right;
+            Point sos_left;
+            Point sos_right;
+            uint32_t c_left;
+            uint32_t c_right;
 
-            uint c_left  = shared_results[t_id].count;
-            uint c_right = shared_results[t_id + offset].count;
+            s_left  = fromSerBn254Point(shared_results[t_id / 2].sum);
+            sos_left  = fromSerBn254Point(shared_results[t_id / 2].sos);
+            c_left  = shared_results[t_id / 2].count;
 
-            // Combine sums:
+            s_right  = fromSerBn254Point(shared_results[(t_id + offset) / 2].sum);
+            sos_right  = fromSerBn254Point(shared_results[(t_id + offset) / 2].sos);
+            c_right  = shared_results[(t_id + offset) / 2].count;
+
+            if (offset == 1) {
+                // First time, read from local results
+                s_left = fromSerBn254Point(local_result.sum);
+                sos_left = fromSerBn254Point(local_result.sos);
+                c_left = local_result.count;
+            }
+
+            // Combine sums
             Point s_combined = s_left + s_right;
 
-            // Combine sum_of_sums:
-            // The partial sums of the 'right' side are shifted by s_left (repeated c_left times).
+            // Combine sum_of_sums
             Point shifted_right = s_right.operate_with_self(c_left);
             Point sos_combined = sos_left + shifted_right + sos_right;
 
             // Combine counts
-            uint c_combined = c_left + c_right;
+            uint32_t c_combined = c_left + c_right;
 
-            // Write results back
-            shared_results[t_id].sum   = toSerBn254Point(s_combined);
-            shared_results[t_id].sos    = toSerBn254Point(sos_combined);
-            shared_results[t_id].count = c_combined;
+            // Write back to shared memory
+            shared_results[t_id / 2].sum = toSerBn254Point(s_combined);
+            shared_results[t_id / 2].sos = toSerBn254Point(sos_combined);
+            shared_results[t_id / 2].count = c_combined;
         }
+
+        else if (t_id < threads_per_tg && offset == 1 && t_id % 2 == 0) {
+            shared_results[t_id / 2] = local_result;
+        }
+
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
     // ------------------------------------------------------------
-    // 3) Thread 0 writes a PartialReductionResult
-    //    for this group into partial_results_buffer[group_id]
+    // 4) Write the final partial result for this threadgroup
+    //    Only thread 0 writes the combined result
     // ------------------------------------------------------------
     if (t_id == 0) {
-        PartialReductionResult r = shared_results[0];
-        partial_results_buffer[group_id] = r;
+        PartialReductionResult final_result;
+        if (threads_per_tg > 1) {
+            final_result = shared_results[0];
+        } else {
+            final_result = local_result;
+        }
+        partial_results_buffer[group_id] = final_result;
     }
 }
 
