@@ -2,23 +2,22 @@ pub mod prepare_buckets_indices;
 pub mod sort_buckets;
 pub mod bucket_wise_accumulation;
 pub mod sum_reduction;
+mod final_accumulation;
 
-use std::ops::Add;
 use std::sync::{Arc, Mutex};
 use crate::metal::abstraction::{
     errors::MetalError,
-    limbs_conversion::{FromLimbs},
     state::*,
 };
 use ark_std::{vec::Vec};
 // For benchmarking
 use std::time::Instant;
-use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
+use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
 use crate::utils::preprocess::MsmInstance;
 use metal::*;
-use objc::rc::autoreleasepool;
 use rayon::prelude::{ParallelIterator, IntoParallelIterator};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
+use crate::metal::msm::final_accumulation::final_accumulation;
 use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::metal::msm::sort_buckets::sort_buckets_indices;
 use crate::metal::msm::sum_reduction::sum_reduction;
@@ -49,7 +48,6 @@ pub struct MetalMsmPipeline {
     pub bucket_wise_accumulation: ComputePipelineState,
     pub sum_reduction_partial: ComputePipelineState,
     pub sum_reduction_final: ComputePipelineState,
-    pub final_accumulation: ComputePipelineState,
 }
 
 pub struct MetalMsmConfig {
@@ -76,7 +74,6 @@ pub fn setup_metal_state() -> MetalMsmConfig {
     let bucket_wise_accumulation = state.setup_pipeline("bucket_wise_accumulation").unwrap();
     let sum_reduction_partial = state.setup_pipeline("sum_reduction_partial").unwrap();
     let sum_reduction_final = state.setup_pipeline("sum_reduction_final").unwrap();
-    let final_accumulation = state.setup_pipeline("final_accumulation").unwrap();
 
     MetalMsmConfig {
         state,
@@ -85,13 +82,12 @@ pub fn setup_metal_state() -> MetalMsmConfig {
             bucket_wise_accumulation,
             sum_reduction_partial,
             sum_reduction_final,
-            final_accumulation,
         },
     }
 }
 
 
-pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP: usize, const NS: usize>(
+pub fn encode_instances<P: ToLimbs<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP: usize, const NS: usize>(
     bases: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
@@ -154,12 +150,10 @@ pub fn encode_instances<P: PointGPU<NP> + Sync, S: ScalarGPU<NS> + Sync, const N
     }
 }
 
-pub fn exec_metal_commands<P: FromLimbs>(
+pub fn exec_metal_commands<P: PointGPU<24>>(
     config: &MetalMsmConfig,
     instance: MetalMsmInstance,
 ) -> Result<P, MetalError> {
-    let data = &instance.data;
-
     let prepare_time = Instant::now();
     prepare_buckets_indices(&config, &instance);
     log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
@@ -177,33 +171,9 @@ pub fn exec_metal_commands<P: FromLimbs>(
     sum_reduction(&config, &instance);
     log::debug!("Sum reduction time: {:?}", reduction_time.elapsed());
 
-    {
-        // Sequentially accumulate the msm results on GPU
-        let final_time = Instant::now();
-        autoreleasepool(|| {
-            let (command_buffer, command_encoder) = config.state.setup_command(
-                &config.pipelines.final_accumulation,
-                Some(&[
-                    (0, &data.window_size_buffer),
-                    (1, &data.window_starts_buffer),
-                    (2, &data.window_num_buffer),
-                    (3, &data.res_buffer),
-                    (4, &data.result_buffer),
-                ]),
-            );
-            command_encoder.dispatch_thread_groups(MTLSize::new(1, 1, 1), MTLSize::new(1, 1, 1));
-            command_encoder.end_encoding();
-            command_buffer.commit();
-            command_buffer.wait_until_completed();
-        });
-        log::debug!("Final accumulation time: {:?}", final_time.elapsed());
-    }
-
-    // retrieve and parse the result from GPU
-    let msm_result = {
-        let raw_limbs = MetalState::retrieve_contents::<u32>(&data.result_buffer);
-        P::from_u32_limbs(&raw_limbs)
-    };
+    let final_time = Instant::now();
+    let msm_result = final_accumulation::<P>(&config, &instance);
+    log::debug!("Final accumulation time: {:?}", final_time.elapsed());
 
     Ok(msm_result)
 }
@@ -213,14 +183,22 @@ pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     scalars: &[S],
     config: &mut MetalMsmConfig,
 ) -> Result<P, MetalError> {
+
+    let encoding_time = Instant::now();
     let instance = encode_instances(points, scalars, config, None);
-    exec_metal_commands(config, instance)
+    log::debug!("Encoding Instance Time: {:?}", encoding_time.elapsed());
+
+    let exec_time = Instant::now();
+    let res = exec_metal_commands(config, instance);
+    log::debug!("> Pure Compute Time: {:?}", exec_time.elapsed());
+
+    res
 }
 
 
 pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: Option<usize>) -> P
 where
-    P: PointGPU<24> + Add<P, Output = P> + Send + Sync + Clone,
+    P: PointGPU<24> + Send + Sync + Clone,
     S: ScalarGPU<8> + Send + Sync,
 {
     let points = &instance.points;
@@ -265,10 +243,11 @@ where
 }
 
 #[cfg(feature = "h2c")]
-pub fn best_msm<C, P, S>(scalars: &[C::Scalar], points: &[C]) -> C
+pub fn best_msm<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
 where
     C: halo2curves::CurveAffine,         // Your curve type
-    P: PointGPU<24> + Sync, // GPU-compatible point type
+    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
+    POUT: PointGPU<24> + Sync, // GPU-compatible point type
     S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
 {
     // Step 1: Convert scalars to GPU representation
@@ -284,13 +263,13 @@ where
     };
 
     // Step 2: Convert points to GPU representation
-    let gpu_points: &[P] = unsafe {
-        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<P>(),
+    let gpu_points: &[PIN] = unsafe {
+        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<PIN>(),
             "C and P must have the same size for reinterpret casting");
-        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<P>(),
+        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<PIN>(),
             "C and P must have the same alignment for reinterpret casting");
         std::slice::from_raw_parts(
-            points.as_ptr() as *const P,
+            points.as_ptr() as *const PIN,
             points.len(),
         )
     };
@@ -301,22 +280,25 @@ where
     log::debug!("Config Setup Time: {:?}", setup_time.elapsed());
 
     // Step 4: Perform the GPU computation
-    let compute_time = Instant::now();
+    let encode_time = Instant::now();
     let instance = encode_instances(gpu_points, gpu_scalars, &mut config, None);
-    let gpu_result: P = exec_metal_commands(&config, instance).unwrap();
+    log::debug!("Encode Instances Time: {:?}", encode_time.elapsed());
+    let compute_time = Instant::now();
+    let gpu_result: POUT = exec_metal_commands(&config, instance).unwrap();
     log::debug!("Pure Compute Time: {:?}", compute_time.elapsed());
 
-
     // Step 5: Convert GPU result to CPU representation
-    let cpu_result: C = unsafe {
-        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<P>(),
+    let cpu_result: C::Curve = unsafe {
+        assert_eq!(std::mem::size_of::<C::Curve>(), std::mem::size_of::<POUT>(),
             "C and P must have the same size for reinterpret casting");
-        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<P>(),
+        assert_eq!(std::mem::align_of::<C::Curve>(), std::mem::align_of::<POUT>(),
             "C and P must have the same alignment for reinterpret casting");
-        std::ptr::read(&gpu_result as *const P as *const C)
+        std::ptr::read(&gpu_result as *const POUT as *const C::Curve)
     };
 
-    cpu_result
+    use halo2curves::group::Curve;
+
+    cpu_result.to_affine()
 }
 
 
@@ -448,7 +430,7 @@ mod tests {
                 let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
-                let metal_msm = best_msm::<H2GAffine, H2GAffine, H2Fr>(scalars, &affine_points);
+                let metal_msm = best_msm::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
                 assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",

@@ -1,3 +1,4 @@
+use std::ops::Add;
 use rand::RngCore;
 use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
 
@@ -55,7 +56,7 @@ pub trait ScalarGPU<const N: usize> : ToLimbs<N> {
     }
 }
 
-pub trait PointGPU<const N: usize> : FromLimbs + ToLimbs<N> {
+pub trait PointGPU<const N: usize> : FromLimbs + ToLimbs<N> + Add<Self, Output = Self> + Sized + Clone  {
     fn random(rng: &mut impl RngCore) -> Self;
 
     fn into<B : PointGPU<N>>(&self) -> B {
@@ -375,12 +376,6 @@ pub mod h2c {
     impl PointGPU<24> for H2G {
         fn random(rng: &mut impl RngCore) -> Self {
             <Self as Group>::random(rng).to_affine().to_curve()
-        }
-    }
-
-    impl PointGPU<24> for H2GAffine {
-        fn random(rng: &mut impl RngCore) -> Self {
-            <H2G as Group>::random(rng).to_affine()
         }
     }
 }

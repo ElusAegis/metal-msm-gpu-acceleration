@@ -560,29 +560,3 @@ uint lower_bound_x(device const uint2 *arr, uint n, uint key) {
         res[group_id] = final_sos;
     }
 }
-
-
-[[kernel]] void final_accumulation(
-    constant const uint32_t& _window_size       [[ buffer(0) ]],
-    constant const uint32_t* _window_starts     [[ buffer(1) ]],
-    constant const uint32_t& _num_windows       [[ buffer(2) ]],
-    device Point* res                           [[ buffer(3) ]],
-    device Point& msm_result                    [[ buffer(4) ]]
-)
-{
-    uint32_t window_size = _window_size;    // c in arkworks code
-    uint32_t num_windows = _num_windows;
-    Point lowest_window_sum = res[0];
-    uint32_t last_res_idx = num_windows - 1;
-
-    Point total_sum = Point::neutral_element();
-    for (uint32_t i = 1; i < num_windows; i++) {
-        Point tmp = total_sum;
-        total_sum = tmp + res[last_res_idx - i + 1];
-
-        for (uint32_t j = 0; j < window_size; j++) {
-            total_sum = total_sum.double_in_place();
-        }
-    }
-    msm_result = total_sum + lowest_window_sum;
-}

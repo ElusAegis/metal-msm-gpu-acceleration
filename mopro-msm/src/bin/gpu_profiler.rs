@@ -56,13 +56,15 @@ fn main() {
             "gpu" => {
                 // Initialize Metal configuration
 
+                let config_time = instant::Instant::now();
                 let mut metal_config = setup_metal_state();
+                log::debug!("Config Setup Time: {:?}", config_time.elapsed());
 
                 let _ = metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
             }
             #[cfg(feature = "h2c")]
             "gpu" => {
-                let _ = best_msm::<GAffine, GAffine, Fr>(&instance.scalars, &affine_points);
+                let _ = best_msm::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
             }
             "par_gpu" => {
                 let target_msm_log_size = args.get(3).and_then(|arg| arg.parse::<usize>().ok());
