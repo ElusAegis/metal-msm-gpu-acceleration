@@ -1,9 +1,9 @@
-use metal::{ComputeCommandEncoderRef, MTLResourceOptions};
+use metal::{ComputeCommandEncoderRef, Device, MTLResourceOptions};
 
 use crate::metal::abstraction::errors::MetalError;
 
 use core::{ffi, mem};
-use std::{env, fs, path::Path};
+use std::env;
 
 /// Structure for abstracting basic calls to a Metal device and saving the state. Used for
 /// implementing GPU parallel computations in Apple machines.
@@ -14,22 +14,36 @@ pub struct MetalState {
 }
 
 impl MetalState {
-    /// Creates a new Metal state with an optional `device` (GPU). If `None` is passed then it will use
-    /// the system's default.
-    pub fn new(device: Option<metal::Device>) -> Result<Self, MetalError> {
-        let device: metal::Device =
-            device.unwrap_or(metal::Device::system_default().ok_or(MetalError::DeviceNotFound())?);
+    /// Creates a new Metal state with an optional `device` (GPU).
+    /// If `None` is passed, it will use the **first available device**, not the system's default.
+    pub fn new(device: Option<Device>) -> Result<Self, MetalError> {
 
-        let metallib_path = Path::new(env!("OUT_DIR")).join("msm.metallib");
+        // Step 1: Get the device
+        // We use first available device instead of system default because it saves 30ms initialization time
+        let device: Device = device
+            .unwrap_or(
+                Device::all().first()
+                    .map_or_else(
+                        || Err(MetalError::DeviceNotFound()),
+                        |d| Ok(d.clone())
+                    )?
+            );
 
-        let lib_data = fs::read(metallib_path)
-            .expect(format!("Missing metal library on the path {}", env!("OUT_DIR")).as_str());
 
+
+        // Step 2: Load the Metal library data
+        let lib_data = include_bytes!(concat!(env!("OUT_DIR"), "/msm.metallib"));
+
+
+        // Step 3: Create the Metal library from the loaded data
         let library = device
-            .new_library_with_data(&lib_data)
+            .new_library_with_data(lib_data)
             .map_err(MetalError::LibraryError)?;
+
+        // Step 4: Create the command queue
         let queue = device.new_command_queue();
 
+        // Return the Metal state
         Ok(Self {
             device,
             library,
