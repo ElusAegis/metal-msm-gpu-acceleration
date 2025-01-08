@@ -18,7 +18,7 @@ use rayon::prelude::{ParallelIterator, IntoParallelIterator};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::metal::msm::final_accumulation::final_accumulation;
 use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
-use crate::metal::msm::sort_buckets::{sort_buckets_indices, CPU_SORT_FINISHED};
+use crate::metal::msm::sort_buckets::sort_buckets_indices;
 use crate::metal::msm::sum_reduction::sum_reduction;
 
 pub struct MetalMsmData {
@@ -324,7 +324,7 @@ where
         || {
             // Wait for the GPU MSM to pass the sorting stage before starting the CPU MSM
             // This is because the sorting is CPU bound, and we want to avoid CPU contention
-            let (lock, cvar) = &*CPU_SORT_FINISHED.clone();
+            let (lock, cvar) = &*sort_buckets::CPU_SORT_FINISHED.clone();
 
             // Wait for the GPU thread to unlock the value
             let mut started = lock.lock().unwrap();
