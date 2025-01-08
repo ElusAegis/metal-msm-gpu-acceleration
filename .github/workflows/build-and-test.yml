@@ -1,48 +1,78 @@
-name: Build and Test
+name: Build, Test, and Lint
 
 on:
-    push:
-        branches:
-            - main
-        paths-ignore:
-            - "**/*.md"
-    pull_request:
-        branches:
-            - main
-        types:
-            - opened
-            - reopened
-            - synchronize
-            - ready_for_review
-        paths-ignore:
-            - "**/*.md"
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths-ignore:
+      - "**/*.md"
 
 env:
-    CARGO_TERM_COLOR: always
-    SCCACHE_GHA_ENABLED: "false"
-    RUSTC_WRAPPER: "sccache"
+  CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "false"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
-    # TODO: Add a job to run clippy
-    lint:
-        runs-on: macos-latest
-        steps:
-            - uses: actions/checkout@v4
-            - name: Check formatting
-              run: cargo fmt --all -- --check
+  lint:
+    name: Lint and Format Check
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-    gpu-benchmarks:
-        runs-on: macos-latest
-        steps:
-            - uses: actions/checkout@v4
-            - name: Install Rust toolchain
-              uses: actions-rs/toolchain@v1
-              with:
-                  toolchain: "1.77"
-                  override: true
-            - name: Run sccache-cache
-              uses: mozilla-actions/sccache-action@v0.0.3
-            - name: Run GPU Benchmarks tests
-              run: |
-                  cd mopro-msm
-                  cargo test test_msm_correctness -- --nocapture
+  test:
+    name: Run Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install Dependencies
+        run: rustup target add aarch64-apple-ios
+      - name: Run Tests (Halo2Curves Backend)
+        env:
+          RUST_LOG: debug
+        run: cargo test --release --features "h2c macos" --no-default-features
+      - name: Run Tests (Ark Backend)
+        env:
+          RUST_LOG: debug
+        run: cargo test --release --features "ark macos" --no-default-features
+
+  build:
+    name: Build for iOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Install Rust Toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Install Dependencies
+        run: rustup target add aarch64-apple-ios
+      - name: Build for iOS
+        run: cargo build --features "h2c ios" --no-default-features
