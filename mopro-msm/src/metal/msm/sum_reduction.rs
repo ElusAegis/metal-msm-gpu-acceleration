@@ -35,7 +35,7 @@ fn sum_reduction_partial(
         .pipelines
         .sum_reduction_partial
         .max_total_threads_per_threadgroup()
-        .min(128); // Some heuristic
+        .min(32); // some heuristic, for window size 15
     // For example:
     let threads_per_group = max_threads;
 
@@ -158,7 +158,7 @@ pub fn sum_reduction(
     config: &MetalMsmConfig,
     instance: &MetalMsmInstance,
 ) {
-    let buckets_per_threadgroup = 4096 * 4; // some heuristic
+    let buckets_per_threadgroup = 4096; // some heuristic for window size 15
     let groups_per_window = (instance.params.buckets_size + 1).div_ceil(buckets_per_threadgroup);
 
     // Stage 1: Partial reduction

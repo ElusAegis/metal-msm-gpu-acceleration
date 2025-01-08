@@ -242,7 +242,7 @@ where
 }
 
 #[cfg(feature = "h2c")]
-pub fn gpu_msm_h2c<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
+pub fn gpu_msm_h2c<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C::Curve
 where
     C: halo2curves::CurveAffine,         // Your curve type
     PIN: ToLimbs<24> + Sync, // GPU-compatible point type
@@ -295,13 +295,11 @@ where
         std::ptr::read(&gpu_result as *const POUT as *const C::Curve)
     };
 
-    use halo2curves::group::Curve;
-
-    cpu_result.to_affine()
+    cpu_result
 }
 
 #[cfg(feature = "h2c")]
-pub fn gpu_with_cpu<C, PIN, POUT, S>(scalar: &[C::Scalar], points: &[C]) -> C
+pub fn gpu_with_cpu<C, PIN, POUT, S>(scalar: &[C::Scalar], points: &[C]) -> C::Curve
 where
     C: halo2curves::CurveAffine,         // Your curve type
     PIN: ToLimbs<24> + Sync, // GPU-compatible point type
@@ -311,8 +309,14 @@ where
 
     // Split the scalar and points into two halves
     // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
-    let (scalar_1, scalar_2) = scalar.split_at(scalar.len() * 3 / 5);
-    let (point_1, point_2) = points.split_at(points.len() * 3 / 5);
+    let split_at = if scalar.len() < 2usize.pow(18) {
+        scalar.len() * 1 / 3
+    } else {
+        scalar.len() * 3 / 5
+    };
+
+    let (scalar_1, scalar_2) = scalar.split_at(split_at);
+    let (point_1, point_2) = points.split_at(split_at);
 
     // Use Rayon to run GPU and CPU tasks in parallel
     let (gpu_result, cpu_result) = rayon::join(
@@ -335,12 +339,11 @@ where
     );
 
     // Combine GPU and CPU results
-    use halo2curves::group::Curve;
-    (gpu_result + cpu_result.into()).to_affine()
+    gpu_result + cpu_result
 }
 
 #[cfg(feature = "h2c")]
-pub fn msm_best<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C
+pub fn msm_best<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C::Curve
 where
     C: halo2curves::CurveAffine,         // Your curve type
     PIN: ToLimbs<24> + Sync, // GPU-compatible point type
@@ -479,7 +482,7 @@ mod tests {
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
                 let metal_msm = gpu_msm_h2c::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
-                assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
+                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
                     i, LOG_INSTANCE_SIZE
@@ -504,7 +507,7 @@ mod tests {
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
                 let metal_msm = gpu_with_cpu::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
-                assert_eq!(metal_msm, h2c_msm.to_affine(), "This msm is wrongly computed");
+                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
                     i, LOG_INSTANCE_SIZE
