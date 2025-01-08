@@ -4,6 +4,10 @@ use walkdir::WalkDir;
 const METAL_SHADER_DIR: &str = "src/metal/shader/";
 
 fn main() {
+    if cfg!(all(not(feature = "ark"), not(feature = "h2c"))) {
+        panic!("One of the features `ark` or `h2c` needs to be enabled");
+    }
+
     compile_shaders();
     setup_rebuild();
 }
@@ -131,7 +135,7 @@ fn get_sdk() -> &'static str {
     if cfg!(feature = "macos") {
         "macosx"
     } else if cfg!(feature = "ios") {
-        "ios"
+        "iphoneos"
     } else {
         panic!("one of the features macos or ios needs to be enabled")
     }
