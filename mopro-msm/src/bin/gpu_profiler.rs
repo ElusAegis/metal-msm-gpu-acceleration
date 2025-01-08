@@ -1,19 +1,21 @@
-use std::env;
 #[cfg(all(feature = "ark", not(feature = "h2c")))]
 use ark_ec::{CurveGroup, VariableBaseMSM};
 #[cfg(feature = "h2c")]
 use halo2curves::group::Curve;
-use rand::rngs::OsRng;
 #[cfg(all(feature = "ark", not(feature = "h2c")))]
-use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr , ArkG as G};
+use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr, ArkG as G};
 #[cfg(feature = "h2c")]
-use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr , H2G as G, H2GAffine as GAffine};
+use mopro_msm::metal::abstraction::limbs_conversion::h2c::{
+    H2Fr as Fr, H2GAffine as GAffine, H2G as G,
+};
+use mopro_msm::metal::msm::metal_msm_parallel;
 #[cfg(feature = "h2c")]
 use mopro_msm::metal::msm::{gpu_msm_h2c, gpu_with_cpu};
-use mopro_msm::metal::msm::{metal_msm_parallel};
 #[cfg(all(feature = "ark", not(feature = "h2c")))]
-use mopro_msm::metal::msm::{setup_metal_state, metal_msm};
+use mopro_msm::metal::msm::{metal_msm, setup_metal_state};
 use mopro_msm::utils::preprocess::get_or_create_msm_instances;
+use rand::rngs::OsRng;
+use std::env;
 
 fn main() {
     // Setup logger
@@ -26,7 +28,8 @@ fn main() {
     let default_log_instance_size: u32 = 16;
 
     // Parse `log_instance_size` argument (if provided)
-    let log_instance_size = args.get(1)
+    let log_instance_size = args
+        .get(1)
         .and_then(|arg| arg.parse::<u32>().ok())
         .unwrap_or(default_log_instance_size);
     log::info!("Log instance size: {}", log_instance_size);
@@ -35,17 +38,25 @@ fn main() {
     let run_mode = args.get(2).unwrap_or(&"gpu".to_string()).to_lowercase();
     log::info!("Run mode: {}", run_mode);
 
-
     // RNG initialization
     let rng = OsRng::default();
 
     // Generate or retrieve MSM instances
     const NUM_INSTANCES: u32 = 1;
-    let instances = get_or_create_msm_instances::<G, Fr>(log_instance_size, NUM_INSTANCES, rng, None).unwrap();
+    let instances =
+        get_or_create_msm_instances::<G, Fr>(log_instance_size, NUM_INSTANCES, rng, None).unwrap();
     #[cfg(all(feature = "ark", not(feature = "h2c")))]
-    let affine_points = instances[0].points.iter().map(|p| p.into_affine()).collect::<Vec<_>>();
+    let affine_points = instances[0]
+        .points
+        .iter()
+        .map(|p| p.into_affine())
+        .collect::<Vec<_>>();
     #[cfg(feature = "h2c")]
-    let affine_points = instances[0].points.iter().map(|p| p.to_affine()).collect::<Vec<_>>();
+    let affine_points = instances[0]
+        .points
+        .iter()
+        .map(|p| p.to_affine())
+        .collect::<Vec<_>>();
 
     let start_execution = instant::Instant::now();
 

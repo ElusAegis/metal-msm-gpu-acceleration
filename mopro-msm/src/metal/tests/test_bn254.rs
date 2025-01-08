@@ -162,8 +162,8 @@ mod tests {
     }
 
     mod fp_tests {
-        use ark_ff::PrimeField;
         use super::*;
+        use ark_ff::PrimeField;
 
         use proptest::collection;
 
@@ -318,7 +318,11 @@ mod tests {
 
         use super::*;
 
-        fn execute_kernel<P: ToLimbs<24>, Q: ToLimbs<NQ>, const NQ: usize>(name: &str, p: &P, q: &Q) -> Vec<u32> {
+        fn execute_kernel<P: ToLimbs<24>, Q: ToLimbs<NQ>, const NQ: usize>(
+            name: &str,
+            p: &P,
+            q: &Q,
+        ) -> Vec<u32> {
             let state = MetalState::new(None).unwrap();
             let pipeline = state.setup_pipeline(name).unwrap();
 

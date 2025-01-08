@@ -1,6 +1,6 @@
-use std::env;
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::env;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -37,18 +37,12 @@ where
         T: Serializer,
     {
         // Convert points to Vec<Vec<u32>> limbs
-        let points_limb_data: Vec<Vec<u32>> = self
-            .points
-            .iter()
-            .map(|p| p.to_u32_limbs())
-            .collect();
+        let points_limb_data: Vec<Vec<u32>> =
+            self.points.iter().map(|p| p.to_u32_limbs()).collect();
 
         // Convert scalars to Vec<Vec<u32>> limbs
-        let scalars_limb_data: Vec<Vec<u32>> = self
-            .scalars
-            .iter()
-            .map(|s| s.to_u32_limbs())
-            .collect();
+        let scalars_limb_data: Vec<Vec<u32>> =
+            self.scalars.iter().map(|s| s.to_u32_limbs()).collect();
 
         // Serde can automatically serialize the structure { points, scalars } if we wrap it
         // in a temporary struct or tuple. We'll do a tuple for brevity: (Vec<Vec<u32>>, Vec<Vec<u32>>).
@@ -66,8 +60,8 @@ where
         D: Deserializer<'de>,
     {
         // We'll be reading a tuple: (Vec<Vec<u32>>, Vec<Vec<u32>>)
-        let (points_limb_data, scalars_limb_data): (Vec<Vec<u32>>, Vec<Vec<u32>>)
-            = Deserialize::deserialize(deserializer)?;
+        let (points_limb_data, scalars_limb_data): (Vec<Vec<u32>>, Vec<Vec<u32>>) =
+            Deserialize::deserialize(deserializer)?;
 
         // Convert each Vec<u32> → P or S using FromLimbs.
         let points: Vec<P> = points_limb_data
@@ -86,7 +80,6 @@ where
     }
 }
 
-
 pub fn save_msm_instances<P, S, PathT>(
     path: PathT,
     data: &Vec<MsmInstance<P, S>>,
@@ -98,15 +91,12 @@ where
 {
     // We rely on the custom Serialize of MsmInstance<P,S> here
     let mut file = File::create(path)?;
-    let encoded = bincode::serialize(data)
-        .map_err(|_| HarnessError::DeserializationError)?;
+    let encoded = bincode::serialize(data).map_err(|_| HarnessError::DeserializationError)?;
     file.write_all(&encoded)?;
     Ok(())
 }
 
-pub fn load_msm_instances<P, S, PathT>(
-    path: PathT,
-) -> Result<Vec<MsmInstance<P, S>>, HarnessError>
+pub fn load_msm_instances<P, S, PathT>(path: PathT) -> Result<Vec<MsmInstance<P, S>>, HarnessError>
 where
     PathT: AsRef<Path>,
     P: FromLimbs,
@@ -115,8 +105,8 @@ where
     let mut file = File::open(path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
-    let data: Vec<MsmInstance<P, S>> = bincode::deserialize(&buffer)
-        .map_err(|_| HarnessError::DeserializationError)?;
+    let data: Vec<MsmInstance<P, S>> =
+        bincode::deserialize(&buffer).map_err(|_| HarnessError::DeserializationError)?;
     Ok(data)
 }
 
@@ -135,7 +125,6 @@ where
         let mut scalars = Vec::with_capacity(instance_size as usize);
 
         for _ in 0..instance_size {
-
             let point = P::random(rng);
             let scalar = S::random(rng);
 
@@ -147,7 +136,6 @@ where
     }
     out
 }
-
 
 /// Tries to load precomputed MSM instances from a single file in `dir`.
 /// The file name is derived from `msm_{instance_size}x{num_instances}.bin`.
@@ -192,7 +180,7 @@ where
         }
 
         // Return an error if validation fails
-        let loaded_instance_size = msm_list.get(0).map_or(0, |msm| msm.points.len());
+        let loaded_instance_size = msm_list.first().map_or(0, |msm| msm.points.len());
         return Err(HarnessError::InvalidData(format!(
             "File mismatch: has instance_size={} and num_instances={}, need {} & {}",
             loaded_instance_size,
@@ -204,7 +192,8 @@ where
 
     // 2. Not found => generate new data
     log::debug!("Generating new MSM instances");
-    let msm_list = generate_msm_instances::<P, S>(2u32.pow(log_instance_size), num_instances, &mut rng);
+    let msm_list =
+        generate_msm_instances::<P, S>(2u32.pow(log_instance_size), num_instances, &mut rng);
 
     // 3. Save
     log::debug!("Saving MSM instances to file: {:?}", full_path);
@@ -276,12 +265,16 @@ mod tests {
         assert_eq!(instance.scalars.len(), decoded.scalars.len());
 
         // Verify limb consistency for the first point and scalar
-        let original_points_limbs: Vec<Vec<u32>> = instance.points.iter().map(|p| p.to_u32_limbs()).collect();
-        let decoded_points_limbs: Vec<Vec<u32>> = decoded.points.iter().map(|p| p.to_u32_limbs()).collect();
+        let original_points_limbs: Vec<Vec<u32>> =
+            instance.points.iter().map(|p| p.to_u32_limbs()).collect();
+        let decoded_points_limbs: Vec<Vec<u32>> =
+            decoded.points.iter().map(|p| p.to_u32_limbs()).collect();
         assert_eq!(original_points_limbs, decoded_points_limbs);
 
-        let original_scalars_limbs: Vec<Vec<u32>> = instance.scalars.iter().map(|s| s.to_u32_limbs()).collect();
-        let decoded_scalars_limbs: Vec<Vec<u32>> = decoded.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+        let original_scalars_limbs: Vec<Vec<u32>> =
+            instance.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+        let decoded_scalars_limbs: Vec<Vec<u32>> =
+            decoded.scalars.iter().map(|s| s.to_u32_limbs()).collect();
         assert_eq!(original_scalars_limbs, decoded_scalars_limbs);
     }
 
@@ -297,35 +290,46 @@ mod tests {
         let mut rng = thread_rng();
 
         // Generate instances
-        let generated_instances = generate_msm_instances::<ArkG, ArkFr>(
-            instance_size,
-            num_instances,
-            &mut rng,
-        );
+        let generated_instances =
+            generate_msm_instances::<ArkG, ArkFr>(instance_size, num_instances, &mut rng);
 
         // Save instances
         save_msm_instances(test_file, &generated_instances)?;
 
         // Load instances
-        let loaded_instances = load_msm_instances::<ArkG, ArkFr, _>(
-            test_file,
-        )?;
+        let loaded_instances = load_msm_instances::<ArkG, ArkFr, _>(test_file)?;
 
         // Verify counts
         assert_eq!(loaded_instances.len(), num_instances as usize);
 
-        for (i, (gen, load)) in generated_instances.iter().zip(loaded_instances.iter()).enumerate() {
+        for (i, (gen, load)) in generated_instances
+            .iter()
+            .zip(loaded_instances.iter())
+            .enumerate()
+        {
             assert_eq!(gen.points.len(), load.points.len());
             assert_eq!(gen.scalars.len(), load.scalars.len());
 
             // Verify limb consistency for the first point and scalar
-            let gen_points_limbs: Vec<Vec<u32>> = gen.points.iter().map(|p| p.to_u32_limbs()).collect();
-            let load_points_limbs: Vec<Vec<u32>> = load.points.iter().map(|p| p.to_u32_limbs()).collect();
-            assert_eq!(gen_points_limbs, load_points_limbs, "Mismatch in points for instance {}", i);
+            let gen_points_limbs: Vec<Vec<u32>> =
+                gen.points.iter().map(|p| p.to_u32_limbs()).collect();
+            let load_points_limbs: Vec<Vec<u32>> =
+                load.points.iter().map(|p| p.to_u32_limbs()).collect();
+            assert_eq!(
+                gen_points_limbs, load_points_limbs,
+                "Mismatch in points for instance {}",
+                i
+            );
 
-            let gen_scalars_limbs: Vec<Vec<u32>> = gen.scalars.iter().map(|s| s.to_u32_limbs()).collect();
-            let load_scalars_limbs: Vec<Vec<u32>> = load.scalars.iter().map(|s| s.to_u32_limbs()).collect();
-            assert_eq!(gen_scalars_limbs, load_scalars_limbs, "Mismatch in scalars for instance {}", i);
+            let gen_scalars_limbs: Vec<Vec<u32>> =
+                gen.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+            let load_scalars_limbs: Vec<Vec<u32>> =
+                load.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+            assert_eq!(
+                gen_scalars_limbs, load_scalars_limbs,
+                "Mismatch in scalars for instance {}",
+                i
+            );
         }
 
         cleanup_test_file(test_file); // Clean up after test
@@ -366,15 +370,31 @@ mod tests {
         assert_eq!(loaded_instances.len(), num_instances as usize);
 
         // Verify that loaded data matches the generated data
-        for (i, (gen, load)) in generated_instances.iter().zip(loaded_instances.iter()).enumerate() {
+        for (i, (gen, load)) in generated_instances
+            .iter()
+            .zip(loaded_instances.iter())
+            .enumerate()
+        {
             // Compare limbs for points and scalars
-            let gen_points_limbs: Vec<Vec<u32>> = gen.points.iter().map(|p| p.to_u32_limbs()).collect();
-            let load_points_limbs: Vec<Vec<u32>> = load.points.iter().map(|p| p.to_u32_limbs()).collect();
-            assert_eq!(gen_points_limbs, load_points_limbs, "Mismatch in points for instance {}", i);
+            let gen_points_limbs: Vec<Vec<u32>> =
+                gen.points.iter().map(|p| p.to_u32_limbs()).collect();
+            let load_points_limbs: Vec<Vec<u32>> =
+                load.points.iter().map(|p| p.to_u32_limbs()).collect();
+            assert_eq!(
+                gen_points_limbs, load_points_limbs,
+                "Mismatch in points for instance {}",
+                i
+            );
 
-            let gen_scalars_limbs: Vec<Vec<u32>> = gen.scalars.iter().map(|s| s.to_u32_limbs()).collect();
-            let load_scalars_limbs: Vec<Vec<u32>> = load.scalars.iter().map(|s| s.to_u32_limbs()).collect();
-            assert_eq!(gen_scalars_limbs, load_scalars_limbs, "Mismatch in scalars for instance {}", i);
+            let gen_scalars_limbs: Vec<Vec<u32>> =
+                gen.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+            let load_scalars_limbs: Vec<Vec<u32>> =
+                load.scalars.iter().map(|s| s.to_u32_limbs()).collect();
+            assert_eq!(
+                gen_scalars_limbs, load_scalars_limbs,
+                "Mismatch in scalars for instance {}",
+                i
+            );
         }
 
         cleanup_test_dir(test_dir); // Clean up after test

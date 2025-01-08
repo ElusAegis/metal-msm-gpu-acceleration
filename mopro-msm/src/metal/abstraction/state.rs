@@ -2,9 +2,9 @@ use metal::{ComputeCommandEncoderRef, Device, MTLResourceOptions};
 
 use crate::metal::abstraction::errors::MetalError;
 
+use crate::metal::abstraction::limbs_conversion::ToLimbs;
 use core::{ffi, mem};
 use std::env;
-use crate::metal::abstraction::limbs_conversion::ToLimbs;
 
 /// Structure for abstracting basic calls to a Metal device and saving the state. Used for
 /// implementing GPU parallel computations in Apple machines.
@@ -18,23 +18,16 @@ impl MetalState {
     /// Creates a new Metal state with an optional `device` (GPU).
     /// If `None` is passed, it will use the **first available device**, not the system's default.
     pub fn new(device: Option<Device>) -> Result<Self, MetalError> {
-
         // Step 1: Get the device
         // We use first available device instead of system default because it saves 30ms initialization time
-        let device: Device = device
-            .unwrap_or(
-                Device::all().first()
-                    .map_or_else(
-                        || Err(MetalError::DeviceNotFound()),
-                        |d| Ok(d.clone())
-                    )?
-            );
-
-
+        let device: Device = device.unwrap_or(
+            Device::all()
+                .first()
+                .map_or_else(|| Err(MetalError::DeviceNotFound()), |d| Ok(d.clone()))?,
+        );
 
         // Step 2: Load the Metal library data
         let lib_data = include_bytes!(concat!(env!("OUT_DIR"), "/msm.metallib"));
-
 
         // Step 3: Create the Metal library from the loaded data
         let library = device
@@ -84,11 +77,9 @@ impl MetalState {
 
     /// Allocates `data` in a buffer of shared memory between CPU and the device (GPU).
     pub fn alloc_buffer_data<T>(&self, data: &[T]) -> metal::Buffer {
-        let size = mem::size_of::<T>();
-
         self.device.new_buffer_with_data(
             data.as_ptr() as *const ffi::c_void,
-            (data.len() * size) as u64,
+            std::mem::size_of_val(data) as u64,
             MTLResourceOptions::StorageModeShared, // TODO: use managed mode
         )
     }
@@ -102,10 +93,9 @@ impl MetalState {
         let total_size = num_items * limb_size;
 
         // Create a GPU buffer with shared storage
-        let buffer = self.device.new_buffer(
-            total_size as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let buffer = self
+            .device
+            .new_buffer(total_size as u64, MTLResourceOptions::StorageModeShared);
 
         // Safety: Ensure the buffer's contents are safe to access as mutable
         let buffer_ptr = buffer.contents() as *mut u32;
@@ -118,11 +108,9 @@ impl MetalState {
     }
 
     pub fn set_bytes<T>(index: usize, data: &[T], encoder: &ComputeCommandEncoderRef) {
-        let size = mem::size_of::<T>();
-
         encoder.set_bytes(
             index as u64,
-            (data.len() * size) as u64,
+            std::mem::size_of_val(data) as u64,
             data.as_ptr() as *const ffi::c_void,
         );
     }

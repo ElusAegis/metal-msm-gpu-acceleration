@@ -100,7 +100,7 @@ fn compile_shaders() {
 
 fn setup_rebuild() {
     // Inform cargo to watch all shader files for changes
-        // Read all files in the shader directory that end with .metal and save their path
+    // Read all files in the shader directory that end with .metal and save their path
     let shaders_to_check = WalkDir::new(METAL_SHADER_DIR)
         .into_iter()
         .filter_map(|entry| {
@@ -120,7 +120,10 @@ fn setup_rebuild() {
             println!("cargo:rerun-if-changed={}", path_str);
             eprintln!("file: {}", path_str);
         } else {
-            eprintln!("Warning: Failed to convert shader path to string: {:?}", shader_path);
+            eprintln!(
+                "Warning: Failed to convert shader path to string: {:?}",
+                shader_path
+            );
         }
     }
 

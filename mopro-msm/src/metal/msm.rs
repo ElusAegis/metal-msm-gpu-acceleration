@@ -1,25 +1,22 @@
+pub mod bucket_wise_accumulation;
+mod final_accumulation;
 pub mod prepare_buckets_indices;
 pub mod sort_buckets;
-pub mod bucket_wise_accumulation;
 pub mod sum_reduction;
-mod final_accumulation;
 
+use crate::metal::abstraction::{errors::MetalError, state::*};
 use std::sync::{Arc, Mutex};
-use crate::metal::abstraction::{
-    errors::MetalError,
-    state::*,
-};
 // For benchmarking
-use std::time::Instant;
 use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
-use crate::utils::preprocess::MsmInstance;
-use metal::*;
-use rayon::prelude::{ParallelIterator, IntoParallelIterator};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
 use crate::metal::msm::final_accumulation::final_accumulation;
 use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::metal::msm::sort_buckets::sort_buckets_indices;
 use crate::metal::msm::sum_reduction::sum_reduction;
+use crate::utils::preprocess::MsmInstance;
+use metal::*;
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use std::time::Instant;
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -85,35 +82,39 @@ pub fn setup_metal_state() -> MetalMsmConfig {
     }
 }
 
-
-pub fn encode_instances<P: ToLimbs<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP: usize, const NS: usize>(
+pub fn encode_instances<
+    P: ToLimbs<NP> + Sync,
+    S: ScalarGPU<NS> + Sync,
+    const NP: usize,
+    const NS: usize,
+>(
     bases: &[P],
     scalars: &[S],
     config: &mut MetalMsmConfig,
-    window_size: Option<u32>
+    window_size: Option<u32>,
 ) -> MetalMsmInstance {
     let modulus_bit_size = S::MODULUS_BIT_SIZE;
 
     let instances_size = bases.len().min(scalars.len());
     let window_size = if let Some(window_size) = window_size {
         window_size
+    } else if instances_size < 32 {
+        3
     } else {
-        if instances_size < 32 {
-            3
-         } else {
-            15 // TODO - learn how to calculate this
-        }
+        15 // TODO - learn how to calculate this
     };
     let buckets_size = (1 << window_size) - 1;
-    let window_starts: Vec<u32> = (0..modulus_bit_size as u32).step_by(window_size as usize).collect();
+    let window_starts: Vec<u32> = (0..modulus_bit_size as u32)
+        .step_by(window_size as usize)
+        .collect();
     let window_num = window_starts.len();
 
     // store params to GPU shared memory
-    let window_size_buffer = config.state.alloc_buffer_data(&[window_size as u32]);
+    let window_size_buffer = config.state.alloc_buffer_data(&[window_size]);
     let window_num_buffer = config.state.alloc_buffer_data(&[window_num as u32]);
     let instances_size_buffer = config.state.alloc_buffer_data(&[instances_size as u32]);
-    let scalar_buffer = config.state.alloc_buffer_data_direct(&scalars);
-    let base_buffer = config.state.alloc_buffer_data_direct(&bases);
+    let scalar_buffer = config.state.alloc_buffer_data_direct(scalars);
+    let base_buffer = config.state.alloc_buffer_data_direct(bases);
     let buckets_matrix_buffer = config
         .state
         .alloc_buffer::<u32>(buckets_size * window_num * 8 * 3);
@@ -143,7 +144,7 @@ pub fn encode_instances<P: ToLimbs<NP> + Sync, S: ScalarGPU<NS> + Sync, const NP
         params: MetalMsmParams {
             instances_size: instances_size as u32,
             buckets_size: buckets_size as u32,
-            window_size: window_size as u32,
+            window_size: window_size,
             window_num: window_num as u32,
         },
     }
@@ -154,24 +155,26 @@ pub fn exec_metal_commands<P: PointGPU<24>>(
     instance: MetalMsmInstance,
 ) -> Result<P, MetalError> {
     let prepare_time = Instant::now();
-    prepare_buckets_indices(&config, &instance);
+    prepare_buckets_indices(config, &instance);
     log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
 
-
     let sort_time = Instant::now();
-    sort_buckets_indices(&config, &instance);
+    sort_buckets_indices(config, &instance);
     log::debug!("Sort buckets indices time: {:?}", sort_time.elapsed());
 
     let accumulation_time = Instant::now();
-    bucket_wise_accumulation(&config, &instance);
-    log::debug!("Bucket wise accumulation time: {:?}", accumulation_time.elapsed());
+    bucket_wise_accumulation(config, &instance);
+    log::debug!(
+        "Bucket wise accumulation time: {:?}",
+        accumulation_time.elapsed()
+    );
 
     let reduction_time = Instant::now();
-    sum_reduction(&config, &instance);
+    sum_reduction(config, &instance);
     log::debug!("Sum reduction time: {:?}", reduction_time.elapsed());
 
     let final_time = Instant::now();
-    let msm_result = final_accumulation::<P>(&config, &instance);
+    let msm_result = final_accumulation::<P>(config, &instance);
     log::debug!("Final accumulation time: {:?}", final_time.elapsed());
 
     Ok(msm_result)
@@ -182,7 +185,6 @@ pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     scalars: &[S],
     config: &mut MetalMsmConfig,
 ) -> Result<P, MetalError> {
-
     let encoding_time = Instant::now();
     let instance = encode_instances(points, scalars, config, None);
     log::debug!("Encoding Instance Time: {:?}", encoding_time.elapsed());
@@ -194,8 +196,10 @@ pub fn metal_msm<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(
     res
 }
 
-
-pub fn metal_msm_parallel<P, S>(instance: &MsmInstance<P, S>, target_msm_log_size: Option<usize>) -> P
+pub fn metal_msm_parallel<P, S>(
+    instance: &MsmInstance<P, S>,
+    target_msm_log_size: Option<usize>,
+) -> P
 where
     P: PointGPU<24> + Send + Sync + Clone,
     S: ScalarGPU<8> + Send + Sync,
@@ -205,7 +209,6 @@ where
 
     // Shared accumulators
     let accumulator = Arc::new(Mutex::new(P::from_u32_limbs(&[0; 24])));
-
 
     // We believe optimal chunk size is 1/3 of the target MSM length
     let chunk_size = if let Some(target_msm_log_size) = target_msm_log_size {
@@ -232,7 +235,6 @@ where
         *accumulator = accumulator.clone().add(partial_result);
     });
 
-
     // Extract the final accumulated result
     Arc::try_unwrap(accumulator)
         .map_err(|_| "Failed to unwrap accumulator")
@@ -244,33 +246,39 @@ where
 #[cfg(feature = "h2c")]
 pub fn gpu_msm_h2c<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C::Curve
 where
-    C: halo2curves::CurveAffine,         // Your curve type
-    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
-    POUT: PointGPU<24> + Sync, // GPU-compatible point type
-    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+    C: halo2curves::CurveAffine, // Your curve type
+    PIN: ToLimbs<24> + Sync,     // GPU-compatible point type
+    POUT: PointGPU<24> + Sync,   // GPU-compatible point type
+    S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
     // Step 1: Convert scalars to GPU representation
     let gpu_scalars: &[S] = unsafe {
-        assert_eq!(std::mem::size_of::<C::Scalar>(), std::mem::size_of::<S>(),
-            "C::Scalar and S must have the same size for reinterpret casting");
-        assert_eq!(std::mem::align_of::<C::Scalar>(), std::mem::align_of::<S>(),
-            "C::Scalar and S must have the same alignment for reinterpret casting");
-        std::slice::from_raw_parts(
-            scalars.as_ptr() as *const S,
-            scalars.len(),
-        )
+        assert_eq!(
+            std::mem::size_of::<C::Scalar>(),
+            std::mem::size_of::<S>(),
+            "C::Scalar and S must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            std::mem::align_of::<C::Scalar>(),
+            std::mem::align_of::<S>(),
+            "C::Scalar and S must have the same alignment for reinterpret casting"
+        );
+        std::slice::from_raw_parts(scalars.as_ptr() as *const S, scalars.len())
     };
 
     // Step 2: Convert points to GPU representation
     let gpu_points: &[PIN] = unsafe {
-        assert_eq!(std::mem::size_of::<C>(), std::mem::size_of::<PIN>(),
-            "C and P must have the same size for reinterpret casting");
-        assert_eq!(std::mem::align_of::<C>(), std::mem::align_of::<PIN>(),
-            "C and P must have the same alignment for reinterpret casting");
-        std::slice::from_raw_parts(
-            points.as_ptr() as *const PIN,
-            points.len(),
-        )
+        assert_eq!(
+            std::mem::size_of::<C>(),
+            std::mem::size_of::<PIN>(),
+            "C and P must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            std::mem::align_of::<C>(),
+            std::mem::align_of::<PIN>(),
+            "C and P must have the same alignment for reinterpret casting"
+        );
+        std::slice::from_raw_parts(points.as_ptr() as *const PIN, points.len())
     };
 
     // Step 3: Setup GPU
@@ -288,10 +296,16 @@ where
 
     // Step 5: Convert GPU result to CPU representation
     let cpu_result: C::Curve = unsafe {
-        assert_eq!(std::mem::size_of::<C::Curve>(), std::mem::size_of::<POUT>(),
-            "C and P must have the same size for reinterpret casting");
-        assert_eq!(std::mem::align_of::<C::Curve>(), std::mem::align_of::<POUT>(),
-            "C and P must have the same alignment for reinterpret casting");
+        assert_eq!(
+            std::mem::size_of::<C::Curve>(),
+            std::mem::size_of::<POUT>(),
+            "C and P must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            std::mem::align_of::<C::Curve>(),
+            std::mem::align_of::<POUT>(),
+            "C and P must have the same alignment for reinterpret casting"
+        );
         std::ptr::read(&gpu_result as *const POUT as *const C::Curve)
     };
 
@@ -301,12 +315,11 @@ where
 #[cfg(feature = "h2c")]
 pub fn gpu_with_cpu<C, PIN, POUT, S>(scalar: &[C::Scalar], points: &[C]) -> C::Curve
 where
-    C: halo2curves::CurveAffine,         // Your curve type
-    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
-    POUT: PointGPU<24> + Sync, // GPU-compatible point type
-    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+    C: halo2curves::CurveAffine, // Your curve type
+    PIN: ToLimbs<24> + Sync,     // GPU-compatible point type
+    POUT: PointGPU<24> + Sync,   // GPU-compatible point type
+    S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
-
     // Split the scalar and points into two halves
     // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
     let split_at = if scalar.len() < 2usize.pow(18) {
@@ -345,14 +358,13 @@ where
 #[cfg(feature = "h2c")]
 pub fn msm_best<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C]) -> C::Curve
 where
-    C: halo2curves::CurveAffine,         // Your curve type
-    PIN: ToLimbs<24> + Sync, // GPU-compatible point type
-    POUT: PointGPU<24> + Sync, // GPU-compatible point type
-    S: ScalarGPU<8> + Sync, // GPU-compatible scalar type
+    C: halo2curves::CurveAffine, // Your curve type
+    PIN: ToLimbs<24> + Sync,     // GPU-compatible point type
+    POUT: PointGPU<24> + Sync,   // GPU-compatible point type
+    S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
     gpu_with_cpu::<C, PIN, POUT, S>(scalars, points)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -361,14 +373,14 @@ mod tests {
 
     #[cfg(feature = "ark")]
     mod ark {
+        use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
+        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::metal::msm::{metal_msm, metal_msm_parallel, setup_metal_state};
+        use crate::metal::tests::init_logger;
+        use crate::utils::preprocess::get_or_create_msm_instances;
         use ark_ec::{CurveGroup, VariableBaseMSM};
         use ark_std::cfg_into_iter;
         use rand::rngs::OsRng;
-        use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
-        use crate::metal::msm::{metal_msm, metal_msm_parallel, setup_metal_state};
-        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
-        use crate::metal::tests::init_logger;
-        use crate::utils::preprocess::{get_or_create_msm_instances};
 
         #[test]
         fn test_msm_correctness_medium_sample_ark() {
@@ -377,21 +389,34 @@ mod tests {
             let mut metal_config = setup_metal_state();
             let rng = OsRng::default();
 
-            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(
+                LOG_INSTANCE_SIZE,
+                NUM_INSTANCE,
+                rng,
+                None,
+            )
+            .unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
                 // map each scalar to a ScalarField
                 let scalars = &instance.scalars;
 
-                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
+                let affine_points: Vec<_> =
+                    cfg_into_iter!(points).map(|p| p.into_affine()).collect();
                 let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
 
-                let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
-                assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
+                let metal_msm =
+                    metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(
+                    metal_msm.into_affine(),
+                    ark_msm.into_affine(),
+                    "This msm is wrongly computed"
+                );
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
+                    i,
+                    LOG_INSTANCE_SIZE
                 );
             }
         }
@@ -403,40 +428,55 @@ mod tests {
             let rng = OsRng::default();
             let mut metal_config = setup_metal_state();
 
-            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<ArkG, ArkFr>(
+                LOG_INSTANCE_SIZE,
+                NUM_INSTANCE,
+                rng,
+                None,
+            )
+            .unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
                 // map each scalar to a ScalarField
                 let scalars = &instance.scalars;
 
-                let affine_points: Vec<_> = cfg_into_iter!(points).map(|p| p.into_affine()).collect();
+                let affine_points: Vec<_> =
+                    cfg_into_iter!(points).map(|p| p.into_affine()).collect();
                 let ark_msm = ArkG::msm(&affine_points, &scalars[..]).unwrap();
 
                 let metal_msm_par = metal_msm_parallel(instance, None);
-                let metal_msm = metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
-                assert_eq!(metal_msm.into_affine(), ark_msm.into_affine(), "This msm is wrongly computed");
-                assert_eq!(metal_msm.into_affine(), metal_msm_par.into_affine(), "This parallel msm is wrongly computed");
+                let metal_msm =
+                    metal_msm::<ArkG, ArkFr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(
+                    metal_msm.into_affine(),
+                    ark_msm.into_affine(),
+                    "This msm is wrongly computed"
+                );
+                assert_eq!(
+                    metal_msm.into_affine(),
+                    metal_msm_par.into_affine(),
+                    "This parallel msm is wrongly computed"
+                );
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
+                    i,
+                    LOG_INSTANCE_SIZE
                 );
             }
         }
-
     }
-
 
     #[cfg(feature = "h2c")]
     mod h2c {
+        use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
+        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
+        use crate::metal::msm::{gpu_msm_h2c, gpu_with_cpu, metal_msm, setup_metal_state};
+        use crate::metal::tests::init_logger;
+        use crate::utils::preprocess::get_or_create_msm_instances;
         use halo2curves::group::Curve;
         use rand::rngs::OsRng;
         use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-        use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
-        use crate::metal::msm::{gpu_msm_h2c, gpu_with_cpu, metal_msm, setup_metal_state};
-        use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
-        use crate::metal::tests::init_logger;
-        use crate::utils::preprocess::get_or_create_msm_instances;
 
         #[test]
         fn test_msm_correctness_medium_sample_h2c() {
@@ -445,7 +485,13 @@ mod tests {
             let mut metal_config = setup_metal_state();
             let rng = OsRng::default();
 
-            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(
+                LOG_INSTANCE_SIZE,
+                NUM_INSTANCE,
+                rng,
+                None,
+            )
+            .unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
@@ -455,15 +501,20 @@ mod tests {
                 let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
-                let metal_msm = metal_msm::<H2G, H2Fr>(&points[..], &scalars[..], &mut metal_config).unwrap();
-                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
+                let metal_msm =
+                    metal_msm::<H2G, H2Fr>(&points[..], &scalars[..], &mut metal_config).unwrap();
+                assert_eq!(
+                    metal_msm.to_affine(),
+                    h2c_msm.to_affine(),
+                    "This msm is wrongly computed"
+                );
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
+                    i,
+                    LOG_INSTANCE_SIZE
                 );
             }
         }
-
 
         #[test]
         fn test_best_msm_medium_sample_h2c() {
@@ -471,7 +522,13 @@ mod tests {
 
             let rng = OsRng::default();
 
-            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(
+                LOG_INSTANCE_SIZE,
+                NUM_INSTANCE,
+                rng,
+                None,
+            )
+            .unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
@@ -481,22 +538,34 @@ mod tests {
                 let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
-                let metal_msm = gpu_msm_h2c::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
-                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
+                let metal_msm =
+                    gpu_msm_h2c::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
+                assert_eq!(
+                    metal_msm.to_affine(),
+                    h2c_msm.to_affine(),
+                    "This msm is wrongly computed"
+                );
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
+                    i,
+                    LOG_INSTANCE_SIZE
                 );
             }
         }
 
         #[test]
         fn test_gpu_cpu_correctness_medium_sample_h2c() {
-                        init_logger();
+            init_logger();
 
             let rng = OsRng::default();
 
-            let instances = get_or_create_msm_instances::<H2G, H2Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCE, rng, None).unwrap();
+            let instances = get_or_create_msm_instances::<H2G, H2Fr>(
+                LOG_INSTANCE_SIZE,
+                NUM_INSTANCE,
+                rng,
+                None,
+            )
+            .unwrap();
 
             for (i, instance) in instances.iter().enumerate() {
                 let points = &instance.points;
@@ -506,14 +575,19 @@ mod tests {
                 let affine_points: Vec<_> = points.into_par_iter().map(|p| p.to_affine()).collect();
                 let h2c_msm = halo2curves::msm::msm_best(&scalars[..], &affine_points[..]);
 
-                let metal_msm = gpu_with_cpu::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
-                assert_eq!(metal_msm.to_affine(), h2c_msm.to_affine(), "This msm is wrongly computed");
+                let metal_msm =
+                    gpu_with_cpu::<H2GAffine, H2GAffine, H2G, H2Fr>(scalars, &affine_points);
+                assert_eq!(
+                    metal_msm.to_affine(),
+                    h2c_msm.to_affine(),
+                    "This msm is wrongly computed"
+                );
                 log::info!(
                     "(pass) {}th instance of size 2^{} is correctly computed",
-                    i, LOG_INSTANCE_SIZE
+                    i,
+                    LOG_INSTANCE_SIZE
                 );
             }
         }
     }
-
 }

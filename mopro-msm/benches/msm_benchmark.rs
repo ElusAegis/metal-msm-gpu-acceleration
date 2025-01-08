@@ -1,22 +1,24 @@
-use std::ops::Add;
-use std::time::Duration;
 #[cfg(feature = "ark")]
 use ark_ec::{CurveGroup, VariableBaseMSM};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 #[cfg(feature = "h2c")]
-use halo2curves::group::{Curve};
-use rand::rngs::OsRng;
+use halo2curves::group::Curve;
+#[cfg(feature = "ark")]
+use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr, ArkG as G};
 #[cfg(feature = "ark")]
 use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
 #[cfg(feature = "h2c")]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
-#[cfg(feature = "ark")]
-use mopro_msm::metal::abstraction::limbs_conversion::ark::{ArkFr as Fr, ArkG as G};
 #[cfg(all(feature = "h2c", not(feature = "ark")))]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::metal::msm::{encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state};
+use mopro_msm::metal::msm::{
+    encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state,
+};
 use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
+use rand::rngs::OsRng;
+use std::ops::Add;
+use std::time::Duration;
 
 #[cfg(feature = "h2c")]
 pub fn msm_h2c_cpu(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
@@ -28,7 +30,8 @@ pub fn msm_h2c_cpu(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
 #[cfg(feature = "h2c")]
 pub fn msm_h2c_gpu_best(instances: &Vec<(Vec<H2GAffine>, Vec<H2Fr>)>) {
     for instance in instances {
-        let _ = mopro_msm::metal::msm_best::<H2GAffine, H2GAffine, H2G, H2Fr>(&instance.1, &instance.0);
+        let _ =
+            mopro_msm::metal::msm_best::<H2GAffine, H2GAffine, H2G, H2Fr>(&instance.1, &instance.0);
     }
 }
 
@@ -40,10 +43,10 @@ pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
 }
 
 fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmInstance<P, S>>) {
-
     let mut metal_config = setup_metal_state();
     for instance in instances {
-        let metal_instance = encode_instances(&instance.points, &instance.scalars, &mut metal_config, None);
+        let metal_instance =
+            encode_instances(&instance.points, &instance.scalars, &mut metal_config, None);
 
         let _result: P = exec_metal_commands(&metal_config, metal_instance).unwrap();
     }
@@ -59,7 +62,6 @@ where
     }
 }
 
-
 fn benchmark_msm(criterion: &mut Criterion) {
     init_logger();
 
@@ -74,7 +76,8 @@ fn benchmark_msm(criterion: &mut Criterion) {
     const LOG_INSTANCE_SIZE: u32 = 20;
     const NUM_INSTANCES: u32 = 5;
 
-    let instances = get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
+    let instances =
+        get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
     #[cfg(feature = "h2c")]
     let instances_h2c = instances
         .iter()
@@ -86,7 +89,11 @@ fn benchmark_msm(criterion: &mut Criterion) {
                     .map(|p| PointGPU::into::<H2G>(p))
                     .map(|p| p.to_affine())
                     .collect::<Vec<_>>(),
-                instance.scalars.iter().map(ScalarGPU::into::<H2Fr>).collect::<Vec<_>>(),
+                instance
+                    .scalars
+                    .iter()
+                    .map(ScalarGPU::into::<H2Fr>)
+                    .collect::<Vec<_>>(),
             )
         })
         .collect::<Vec<_>>();
@@ -107,15 +114,11 @@ fn benchmark_msm(criterion: &mut Criterion) {
 
     // Benchmark Halo2Curves CPU implementation
     #[cfg(feature = "h2c")]
-    bench_group.bench_function("msm_h2c_cpu", |b| {
-        b.iter(|| msm_h2c_cpu(&instances_h2c))
-    });
+    bench_group.bench_function("msm_h2c_cpu", |b| b.iter(|| msm_h2c_cpu(&instances_h2c)));
 
     // Benchmark Arkworks CPU implementation
     #[cfg(feature = "ark")]
-    bench_group.bench_function("msm_ark_cpu", |b| {
-        b.iter(|| msm_ark_cpu(&instances_ark))
-    });
+    bench_group.bench_function("msm_ark_cpu", |b| b.iter(|| msm_ark_cpu(&instances_ark)));
 
     // Benchmark Best Halo2Curves GPU implementation
     #[cfg(feature = "h2c")]
@@ -146,20 +149,23 @@ fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
     const LOG_INSTANCE_SIZE: u32 = 16;
     const NUM_INSTANCES: u32 = 5;
 
-    let instances = get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
+    let instances =
+        get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
 
     let target_msm_sizes = 11..16usize;
 
     for target_msm_size in target_msm_sizes {
-        bench_group.bench_with_input(BenchmarkId::new("msm_gpu_optimal_log_chunk_size", target_msm_size), &target_msm_size, |b, &v| {
-            b.iter(|| msm_gpu_par(&instances, Some(v)));
-        });
+        bench_group.bench_with_input(
+            BenchmarkId::new("msm_gpu_optimal_log_chunk_size", target_msm_size),
+            &target_msm_size,
+            |b, &v| {
+                b.iter(|| msm_gpu_par(&instances, Some(v)));
+            },
+        );
     }
 
     bench_group.finish();
 }
-
-
 
 use std::sync::Once;
 
@@ -176,7 +182,10 @@ fn init_logger() {
 
 // Criterion groups
 criterion_group!(general_benches, benchmark_msm);
-criterion_group!(parameter_benches_par_gpu, benchmark_find_optimal_par_par_gpu);
+criterion_group!(
+    parameter_benches_par_gpu,
+    benchmark_find_optimal_par_par_gpu
+);
 
 // Criterion main
 criterion_main!(general_benches, parameter_benches_par_gpu);

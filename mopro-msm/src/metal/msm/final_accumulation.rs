@@ -33,12 +33,8 @@ pub fn final_accumulation<P: PointGPU<24>>(
         for _ in 0..instance.params.window_size {
             total_sum = total_sum.clone() + total_sum;
         }
-
     }
 
-    // Add the lowest window's sum to the accumulated total
-    let msm_result = total_sum + lowest_window_sum;
-
-    // Return the final MSM result
-    msm_result
+    // Add the lowest window's sum to the accumulated total and return the final MSM result
+    total_sum + lowest_window_sum
 }

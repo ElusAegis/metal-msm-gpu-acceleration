@@ -6,10 +6,10 @@
 //! The kernel logic is parallelized across threads in a group; each group handles
 //! exactly one window. Then partial sums are reduced in threadgroup shared memory.
 
-use instant::Instant;
-use metal::{MTLSize};
-use objc::rc::autoreleasepool;
 use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+use instant::Instant;
+use metal::MTLSize;
+use objc::rc::autoreleasepool;
 
 fn sum_reduction_partial(
     config: &MetalMsmConfig,
@@ -36,18 +36,20 @@ fn sum_reduction_partial(
         .sum_reduction_partial
         .max_total_threads_per_threadgroup()
         .min(32); // some heuristic, for window size 15
-    // For example:
+                  // For example:
     let threads_per_group = max_threads;
 
     // Prepare small buffers for the kernel’s constants
-    let buckets_size_buffer  = config.state.alloc_buffer_data(&[params.buckets_size]);
-    let window_num_buffer    = config.state.alloc_buffer_data(&[num_windows]);
+    let buckets_size_buffer = config.state.alloc_buffer_data(&[params.buckets_size]);
+    let window_num_buffer = config.state.alloc_buffer_data(&[num_windows]);
     let groups_per_window_buffer = config.state.alloc_buffer_data(&[groups_per_window]);
 
     // Prepare the partial_buffer (device) sized to total_threadgroups
     let partial_result_count = total_threadgroups as usize;
     let partial_result_u32_size = 49; // 49 = 3 * 8 + 3 * 8 + 1 (SerBn254Point, SerBn254Point, u32)
-    let partial_results_buffer = config.state.alloc_buffer::<u32>(partial_result_count * partial_result_u32_size);
+    let partial_results_buffer = config
+        .state
+        .alloc_buffer::<u32>(partial_result_count * partial_result_u32_size);
 
     // MTL thread dispatch
     let mtl_threadgroups = MTLSize::new(total_threadgroups, 1, 1);
@@ -67,7 +69,8 @@ fn sum_reduction_partial(
 
         // We must set threadgroup memory lengths for the arrays: sums, sos, counts.
         // sums and sos each hold `threads_per_group` SerBn254Points:
-        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * (threads_per_group / 2);
+        let shared_memory_length =
+            (partial_result_u32_size * size_of::<u32>()) as u64 * (threads_per_group / 2);
 
         cmd_encoder.set_threadgroup_memory_length(0, shared_memory_length);
 
@@ -97,22 +100,22 @@ pub fn sum_reduction_final(
     // We'll have exactly one threadgroup per window => total of num_windows.
     let total_threadgroups = num_windows as u64;
 
-    // Decide how many threads to launch per group. 
+    // Decide how many threads to launch per group.
     // We need at least enough threads to cover 'groups_per_window' partials.
     let max_threads = config
         .pipelines
         .sum_reduction_final
         .max_total_threads_per_threadgroup()
         .min(32); // Some heuristic
-    // Suppose we do:
+                  // Suppose we do:
     let threads_per_group = max_threads.min(groups_per_window as u64).max(1);
 
     // Prepare small buffers:
-    let num_windows_buffer       = config.state.alloc_buffer_data(&[num_windows]);
+    let num_windows_buffer = config.state.alloc_buffer_data(&[num_windows]);
     let groups_per_window_buffer = config.state.alloc_buffer_data(&[groups_per_window]);
 
     // MTLSize
-    let mtl_threadgroups      = MTLSize::new(total_threadgroups, 1, 1);
+    let mtl_threadgroups = MTLSize::new(total_threadgroups, 1, 1);
     let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);
 
     autoreleasepool(|| {
@@ -121,14 +124,15 @@ pub fn sum_reduction_final(
             Some(&[
                 (0, &num_windows_buffer),
                 (1, &groups_per_window_buffer),
-                (2, &partial_results_buffer), // partial results from stage1
+                (2, partial_results_buffer), // partial results from stage1
                 (3, &data.res_buffer),
             ]),
         );
 
         // As in partial kernel, set threadgroup memory:
         let partial_result_u32_size = 49; // 49 = 3 * 8 + 3 * 8 + 1 (SerBn254Point, SerBn254Point, u32)
-        let shared_memory_length =  (partial_result_u32_size * size_of::<u32>()) as u64 * threads_per_group;
+        let shared_memory_length =
+            (partial_result_u32_size * size_of::<u32>()) as u64 * threads_per_group;
         cmd_encoder.set_threadgroup_memory_length(0, shared_memory_length);
 
         // Dispatch
@@ -154,10 +158,7 @@ pub fn sum_reduction_final(
 /// # Flow
 /// - We have `params.num_window` windows => #threadgroups = `params.num_window`.
 /// - We choose `threads_per_group` so that each group can sum `buckets_len = (1<<window_size)-1` buckets in parallel.
-pub fn sum_reduction(
-    config: &MetalMsmConfig,
-    instance: &MetalMsmInstance,
-) {
+pub fn sum_reduction(config: &MetalMsmConfig, instance: &MetalMsmInstance) {
     let buckets_per_threadgroup = 4096; // some heuristic for window size 15
     let groups_per_window = (instance.params.buckets_size + 1).div_ceil(buckets_per_threadgroup);
 
@@ -165,39 +166,45 @@ pub fn sum_reduction(
     let partial_reduction_start = Instant::now();
     let partial_results_buffer = sum_reduction_partial(config, instance, groups_per_window)
         .expect("sum_reduction_partial failed");
-    log::debug!("(reduction) Partial reduction took {:?}", partial_reduction_start.elapsed());
+    log::debug!(
+        "(reduction) Partial reduction took {:?}",
+        partial_reduction_start.elapsed()
+    );
 
     // Stage 2: Final reduction
     let final_reduction_start = Instant::now();
     sum_reduction_final(config, instance, &partial_results_buffer, groups_per_window);
-    log::debug!("(reduction) Final reduction took {:?}", final_reduction_start.elapsed());
+    log::debug!(
+        "(reduction) Final reduction took {:?}",
+        final_reduction_start.elapsed()
+    );
 }
 
-#[cfg(all(test, feature="ark"))] // FIXME - make the tests also work when h2c feature is active
+#[cfg(all(test, feature = "ark"))] // FIXME - make the tests also work when h2c feature is active
 mod tests {
-    use std::ops::{Add, Mul};
-    use ark_ec::CurveGroup;
-    use ark_std::UniformRand;
-    use proptest::prelude::any;
-    use proptest::{prop_assert_eq, proptest};
-    use rand::SeedableRng;
     use super::*;
     use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG, ArkGAffine};
     use crate::metal::abstraction::limbs_conversion::{FromLimbs, ToLimbs};
     use crate::metal::abstraction::state::MetalState;
     use crate::metal::msm::setup_metal_state;
     use crate::metal::tests::init_logger;
+    use ark_ec::CurveGroup;
+    use ark_std::UniformRand;
+    use proptest::prelude::any;
+    use proptest::{prop_assert_eq, proptest};
+    use rand::SeedableRng;
+    use std::ops::{Add, Mul};
 
-    fn reduce_on_gpu(
-        config: &MetalMsmConfig,
-        instance: &MetalMsmInstance,
-    ) -> Vec<ArkGAffine> {
+    fn reduce_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance) -> Vec<ArkGAffine> {
         sum_reduction(config, instance);
 
         // Retrieve the results
         let raw_limbs = MetalState::retrieve_contents::<u32>(&instance.data.res_buffer);
 
-        raw_limbs.chunks_exact(24).map(|limbs| ArkG::from_u32_limbs(limbs).into_affine()).collect::<Vec<_>>()
+        raw_limbs
+            .chunks_exact(24)
+            .map(|limbs| ArkG::from_u32_limbs(limbs).into_affine())
+            .collect::<Vec<_>>()
     }
 
     fn create_test_instance(
@@ -206,16 +213,23 @@ mod tests {
         window_num: usize,
     ) -> MetalMsmInstance {
         // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-        use crate::metal::msm::{MetalMsmParams, MetalMsmData};
+        use crate::metal::msm::{MetalMsmData, MetalMsmParams};
 
         // Make sure that the buckets_matrix length is a multiple of the number of windows
-        assert_eq!(buckets_matrix.len() % window_num, 0,
-                   "buckets_matrix length ({}) is not a multiple of num_windows ({})",
-                   buckets_matrix.len(), window_num);
+        assert_eq!(
+            buckets_matrix.len() % window_num,
+            0,
+            "buckets_matrix length ({}) is not a multiple of num_windows ({})",
+            buckets_matrix.len(),
+            window_num
+        );
 
         let buckets_size = buckets_matrix.len() / window_num;
 
-        let buckets_matrix_limbs = buckets_matrix.iter().flat_map(|p| p.to_u32_limbs()).collect::<Vec<_>>();
+        let buckets_matrix_limbs = buckets_matrix
+            .iter()
+            .flat_map(|p| p.to_u32_limbs())
+            .collect::<Vec<_>>();
 
         let instance_data = MetalMsmData {
             window_size_buffer: config.state.alloc_buffer_data(&[0]),
@@ -268,15 +282,10 @@ mod tests {
         log::debug!("Buckets matrix: {:?}", buckets_matrix);
 
         // Create test instance and sorted indices buffer
-        let instance =
-            create_test_instance(&config, &buckets_matrix, window_num);
-
+        let instance = create_test_instance(&config, &buckets_matrix, window_num);
 
         // We'll do the naive approach
-        let rust_res = sum_reduction_rust(
-            window_num,
-            &buckets_matrix
-        );
+        let rust_res = sum_reduction_rust(window_num, &buckets_matrix);
 
         // Calculate on GPU
         let gpu_res = reduce_on_gpu(&config, &instance);
@@ -292,11 +301,13 @@ mod tests {
 
         // Compare the results
         for j in 0..window_num as usize {
-            assert_eq!(gpu_res[j], rust_res[j],
-                "Mismatch in window j={}: GPU={:?}, Rust={:?}", j, gpu_res[j], rust_res[j]);
+            assert_eq!(
+                gpu_res[j], rust_res[j],
+                "Mismatch in window j={}: GPU={:?}, Rust={:?}",
+                j, gpu_res[j], rust_res[j]
+            );
         }
     }
-
 
     proptest! {
         #[test]
@@ -344,10 +355,7 @@ mod tests {
         }
     }
 
-    pub fn sum_reduction_rust(
-        num_windows: usize,
-        buckets_matrix: &[ArkG],
-    ) -> Vec<ArkGAffine> {
+    pub fn sum_reduction_rust(num_windows: usize, buckets_matrix: &[ArkG]) -> Vec<ArkGAffine> {
         let mut res = vec![ArkG::default(); num_windows];
         let buckets_size = buckets_matrix.len() / num_windows;
         for j in 0..num_windows {
@@ -358,7 +366,7 @@ mod tests {
             for b in 0..buckets_size {
                 let val = buckets_matrix[base_idx + b];
                 // weight by (b+1)? If your kernel is adding (b+1)*val, do so here:
-                let weighted = val.mul(ArkFr::from((b+1) as u64));
+                let weighted = val.mul(ArkFr::from((b + 1) as u64));
                 // or simply do `local_sum = local_sum + val;`
                 local_sum = local_sum.add(&weighted);
             }
@@ -368,5 +376,4 @@ mod tests {
 
         res.iter().map(|p| p.into_affine()).collect()
     }
-
 }

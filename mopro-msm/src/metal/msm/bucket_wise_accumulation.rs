@@ -4,9 +4,9 @@
 //! GPU points in each bucket, based on sorted bucket indices. It also includes
 //! a pure Rust implementation of the accumulation step for validation.
 
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 use metal::MTLSize;
 use objc::rc::autoreleasepool;
-use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 /// Dispatches the `bucket_wise_accumulation` Metal shader kernel.
 /// This kernel reads:
@@ -23,10 +23,7 @@ use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 /// # Returns
 ///
 /// * `()` - The function modifies the `buckets_matrix_buffer` in-place, storing the sums.
-pub fn bucket_wise_accumulation(
-    config: &MetalMsmConfig,
-    instance: &MetalMsmInstance,
-) {
+pub fn bucket_wise_accumulation(config: &MetalMsmConfig, instance: &MetalMsmInstance) {
     let data = &instance.data;
     let params = &instance.params;
 
@@ -39,7 +36,9 @@ pub fn bucket_wise_accumulation(
 
     // For safety, clamp the max GPU threads
     let desired_pairs_per_thread = 128;
-    let actual_threads = ((params.instances_size * params.window_num) as u64 + desired_pairs_per_thread - 1) / desired_pairs_per_thread;
+    let actual_threads =
+        ((params.instances_size * params.window_num) as u64 + desired_pairs_per_thread - 1)
+            / desired_pairs_per_thread;
     // Or choose some other logic if you'd prefer a smaller # of threads
 
     // Threads per group
@@ -48,8 +47,7 @@ pub fn bucket_wise_accumulation(
         .bucket_wise_accumulation
         .max_total_threads_per_threadgroup()
         .min(64) // The maximum number of threads per group due to shared memory limit
-        .min(actual_threads)
-        as u64;
+        .min(actual_threads);
 
     // # of threadgroups
     let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;
@@ -77,13 +75,13 @@ pub fn bucket_wise_accumulation(
         let (command_buffer, command_encoder) = config.state.setup_command(
             &config.pipelines.bucket_wise_accumulation,
             Some(&[
-                (0, &data.instances_size_buffer),     // _instances_size
-                (1, &data.window_num_buffer),        // _num_windows
-                (2, &data.base_buffer),               // p_buff
-                (3, &data.buckets_indices_buffer),           // sorted (x,y)
-                (4, &data.buckets_matrix_buffer),     // output sums
-                (5, &actual_threads_buffer),          // _actual_threads
-                (6, &total_buckets_buffer),           // _total_buckets
+                (0, &data.instances_size_buffer),  // _instances_size
+                (1, &data.window_num_buffer),      // _num_windows
+                (2, &data.base_buffer),            // p_buff
+                (3, &data.buckets_indices_buffer), // sorted (x,y)
+                (4, &data.buckets_matrix_buffer),  // output sums
+                (5, &actual_threads_buffer),       // _actual_threads
+                (6, &total_buckets_buffer),        // _total_buckets
             ]),
         );
 
@@ -95,7 +93,7 @@ pub fn bucket_wise_accumulation(
         //     sizeof(uint) + sizeof(Point)
         // Scalar is stored in 8 u32s, Point is represented as 3 scalars, which is 24 u32s:
         let pair_accum_size = 32 * size_of::<u32>() as u64;
-        let left_accum_size  = threads_per_group * pair_accum_size;
+        let left_accum_size = threads_per_group * pair_accum_size;
         let right_accum_size = threads_per_group * pair_accum_size;
 
         command_encoder.set_threadgroup_memory_length(0, left_accum_size);
@@ -109,19 +107,19 @@ pub fn bucket_wise_accumulation(
     });
 }
 
-#[cfg(all(test, feature="ark"))]
+#[cfg(all(test, feature = "ark"))]
 mod tests {
-    use std::ops::Add;
     use super::*;
+    use crate::metal::abstraction::limbs_conversion::ark::ArkGAffine;
+    use crate::metal::abstraction::limbs_conversion::{ark::ArkG, FromLimbs, ToLimbs};
+    use crate::metal::abstraction::state::MetalState;
     use crate::metal::msm::{setup_metal_state, MetalMsmConfig, MetalMsmInstance};
+    use crate::metal::tests::init_logger;
     use ark_ec::CurveGroup;
     use ark_std::UniformRand;
     use proptest::prelude::*;
     use rand::{Rng, SeedableRng};
-    use crate::metal::abstraction::limbs_conversion::{FromLimbs, ark::ArkG, ToLimbs};
-    use crate::metal::abstraction::limbs_conversion::ark::ArkGAffine;
-    use crate::metal::abstraction::state::MetalState;
-    use crate::metal::tests::init_logger;
+    use std::ops::Add;
 
     /// Struct to hold individual test case data
     struct BucketAccumTestCase {
@@ -148,7 +146,10 @@ mod tests {
         // println!("GPU raw_limbs: {:?}", raw_limbs.chunks(8).collect::<Vec<_>>().chunks(3).collect::<Vec<_>>());
 
         // parse the raw_limbs into a Vec<ArkG>
-        raw_limbs.chunks_exact(24).map(|limbs| ArkG::from_u32_limbs(limbs).into_affine()).collect::<Vec<_>>()
+        raw_limbs
+            .chunks_exact(24)
+            .map(|limbs| ArkG::from_u32_limbs(limbs).into_affine())
+            .collect::<Vec<_>>()
     }
 
     fn create_test_instance(
@@ -157,7 +158,7 @@ mod tests {
         points: &[ArkG],
     ) -> MetalMsmInstance {
         // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-        use crate::metal::msm::{MetalMsmParams, MetalMsmData};
+        use crate::metal::msm::{MetalMsmData, MetalMsmParams};
 
         // Make sure that the buckets_indices are sorted by bucket index
         let mut buckets_indices = buckets_indices.to_vec();
@@ -165,25 +166,34 @@ mod tests {
 
         // Make sure that the length of buckets_indices is a multiple of points length
         // This multiple is the number of windows
-        assert_eq!(buckets_indices.len() % points.len(), 0,
+        assert_eq!(
+            buckets_indices.len() % points.len(),
+            0,
             "buckets_indices length ({}) is not a multiple of points length ({})",
-            buckets_indices.len(), points.len());
+            buckets_indices.len(),
+            points.len()
+        );
 
         let num_windows = buckets_indices.len() / points.len();
 
         // The amount of buckets is the max(bucket_idx) + 1
         let total_bucket_amount = buckets_indices.iter().map(|(a, _)| *a).max().unwrap() + 1;
-        let total_bucket_amount = (total_bucket_amount - 1) - (total_bucket_amount - 1) % num_windows as u32 + num_windows as u32;
+        let total_bucket_amount = (total_bucket_amount - 1)
+            - (total_bucket_amount - 1) % num_windows as u32
+            + num_windows as u32;
 
-        assert_eq!(total_bucket_amount % num_windows as u32, 0,
+        assert_eq!(
+            total_bucket_amount % num_windows as u32,
+            0,
             "total_bucket_amount ({}) is not a multiple of num_windows ({})",
-            total_bucket_amount, num_windows);
+            total_bucket_amount,
+            num_windows
+        );
 
         let instance_size = points.len();
 
         // Fill bases_limbs using write_u32_limbs in parallel
-        let bases_limbs: Vec<u32> =  points
-            .iter().map(|p| p.to_u32_limbs()).flatten().collect();
+        let bases_limbs: Vec<u32> = points.iter().map(|p| p.to_u32_limbs()).flatten().collect();
 
         let instance_data = MetalMsmData {
             window_size_buffer: config.state.alloc_buffer_data(&[0]),
@@ -192,7 +202,9 @@ mod tests {
             window_starts_buffer: config.state.alloc_buffer_data(&[0]),
             scalar_buffer: config.state.alloc_buffer::<u32>(0),
             base_buffer: config.state.alloc_buffer_data(&bases_limbs),
-            buckets_matrix_buffer: config.state.alloc_buffer::<u32>((total_bucket_amount * 8 * 3) as usize),
+            buckets_matrix_buffer: config
+                .state
+                .alloc_buffer::<u32>((total_bucket_amount * 8 * 3) as usize),
             buckets_indices_buffer: config.state.alloc_buffer_data(&buckets_indices),
             res_buffer: config.state.alloc_buffer::<u32>(0),
             result_buffer: config.state.alloc_buffer::<u32>(0),
@@ -205,7 +217,6 @@ mod tests {
             window_size: 0,
             window_num: num_windows as u32,
         };
-
 
         MetalMsmInstance {
             data: instance_data,
@@ -384,22 +395,96 @@ mod tests {
                     (3, 5),
                     (5, 1),
                     (7, 2),
-                    (8, 3)
+                    (8, 3),
                 ],
             },
             // 16. Failing Instance from Large Test
             BucketAccumTestCase {
                 name: "Failing Instance from Large Test #2",
-                buckets_indices: vec! [
-                    (6, 6), (11, 1), (12, 6), (14, 4), (20, 3), (21, 0), (21, 0), (27, 4), (27, 2), (38, 4), (50, 5), (51, 4), (54, 1), (55, 2), (55, 2), (67, 6), (73, 1), (80, 2), (90, 4), (90, 8), (92, 6), (97, 2), (101, 8), (103, 2), (110, 2), (113, 1), (115, 0)
-                ]
+                buckets_indices: vec![
+                    (6, 6),
+                    (11, 1),
+                    (12, 6),
+                    (14, 4),
+                    (20, 3),
+                    (21, 0),
+                    (21, 0),
+                    (27, 4),
+                    (27, 2),
+                    (38, 4),
+                    (50, 5),
+                    (51, 4),
+                    (54, 1),
+                    (55, 2),
+                    (55, 2),
+                    (67, 6),
+                    (73, 1),
+                    (80, 2),
+                    (90, 4),
+                    (90, 8),
+                    (92, 6),
+                    (97, 2),
+                    (101, 8),
+                    (103, 2),
+                    (110, 2),
+                    (113, 1),
+                    (115, 0),
+                ],
             },
             // 17. Failing Instance from Large Test
             BucketAccumTestCase {
                 name: "Failing Instance from Large Test #3",
-                buckets_indices: vec! [
-                    (6, 6), (11, 1), (12, 6), (14, 4), (20, 3), (21, 0), (21, 0), (27, 4), (27, 2), (38, 4), (50, 5), (51, 4), (54, 1), (55, 2), (55, 2), (67, 6), (73, 1), (80, 2), (90, 4), (90, 7), (92, 6), (97, 2), (101, 7), (103, 2), (110, 2), (113, 1), (115, 0), (151, 2), (152, 7), (156, 3), (162, 7), (171, 2), (172, 6), (178, 2), (190, 5), (190, 5), (190, 4), (190, 5), (190, 6), (190, 7), (254, 0), (254, 1), (254, 6), (254, 2), (254, 3), (254, 4), (254, 5) , (255, 6)               ]
-            }
+                buckets_indices: vec![
+                    (6, 6),
+                    (11, 1),
+                    (12, 6),
+                    (14, 4),
+                    (20, 3),
+                    (21, 0),
+                    (21, 0),
+                    (27, 4),
+                    (27, 2),
+                    (38, 4),
+                    (50, 5),
+                    (51, 4),
+                    (54, 1),
+                    (55, 2),
+                    (55, 2),
+                    (67, 6),
+                    (73, 1),
+                    (80, 2),
+                    (90, 4),
+                    (90, 7),
+                    (92, 6),
+                    (97, 2),
+                    (101, 7),
+                    (103, 2),
+                    (110, 2),
+                    (113, 1),
+                    (115, 0),
+                    (151, 2),
+                    (152, 7),
+                    (156, 3),
+                    (162, 7),
+                    (171, 2),
+                    (172, 6),
+                    (178, 2),
+                    (190, 5),
+                    (190, 5),
+                    (190, 4),
+                    (190, 5),
+                    (190, 6),
+                    (190, 7),
+                    (254, 0),
+                    (254, 1),
+                    (254, 6),
+                    (254, 2),
+                    (254, 3),
+                    (254, 4),
+                    (254, 5),
+                    (255, 6),
+                ],
+            },
         ];
 
         // Iterate over each test case
@@ -408,19 +493,27 @@ mod tests {
             let config = setup_metal_state();
 
             let mut rand = rand::thread_rng();
-            let point_amount = test_case.buckets_indices.iter().map(|(_, idx)| *idx).max().unwrap_or(0) as usize + 1;
+            let point_amount = test_case
+                .buckets_indices
+                .iter()
+                .map(|(_, idx)| *idx)
+                .max()
+                .unwrap_or(0) as usize
+                + 1;
             let points: Vec<ArkG> = (0..point_amount).map(|_| ArkG::rand(&mut rand)).collect();
 
             // Create test instance and sorted indices buffer
-            let instance =
-                create_test_instance(&config, &test_case.buckets_indices, &points);
+            let instance = create_test_instance(&config, &test_case.buckets_indices, &points);
 
             // Read the results from the GPU buffer (buckets_matrix)
             let gpu_buckets_matrix = accumulate_on_gpu(&config, &instance);
 
             // Compute expected results using Rust
             let mut rust_acc = bucket_wise_accumulation_rust(&test_case.buckets_indices, &points);
-            rust_acc.resize((instance.params.buckets_size * instance.params.window_num) as usize, ArkG::default());
+            rust_acc.resize(
+                (instance.params.buckets_size * instance.params.window_num) as usize,
+                ArkG::default(),
+            );
 
             // Log the test case name
             log::debug!("\n\nRunning test case: {}", test_case.name);
@@ -452,7 +545,6 @@ mod tests {
             }
         }
     }
-
 
     // A property-based test for "large" scenarios
     proptest! {
@@ -582,7 +674,8 @@ mod tests {
                 continue; // sentinel or empty
             }
             if (bucket_idx as usize) < total_buckets {
-                result[bucket_idx as usize] = result[bucket_idx as usize].add(&points[point_idx as usize]);
+                result[bucket_idx as usize] =
+                    result[bucket_idx as usize].add(&points[point_idx as usize]);
             }
         }
         result

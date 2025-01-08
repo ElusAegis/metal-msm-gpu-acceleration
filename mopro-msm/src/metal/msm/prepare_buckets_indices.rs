@@ -1,6 +1,6 @@
-use metal::{MTLSize};
-use objc::rc::autoreleasepool;
 use super::{MetalMsmConfig, MetalMsmInstance};
+use metal::MTLSize;
+use objc::rc::autoreleasepool;
 
 /// Executes the `prepare_buckets_indices` Metal shader kernel.
 ///
@@ -12,10 +12,7 @@ use super::{MetalMsmConfig, MetalMsmInstance};
 /// # Returns
 ///
 /// * `()` - The function modifies the `buckets_indices_buffer` within `instance`.
-pub(crate) fn prepare_buckets_indices(
-    config: &MetalMsmConfig,
-    instance: &MetalMsmInstance,
-) {
+pub(crate) fn prepare_buckets_indices(config: &MetalMsmConfig, instance: &MetalMsmInstance) {
     let data = &instance.data;
     let params = &instance.params;
 
@@ -40,28 +37,28 @@ pub(crate) fn prepare_buckets_indices(
     });
 }
 
-#[cfg(all(test, feature="ark"))]
+#[cfg(all(test, feature = "ark"))]
 mod test {
-    use std::collections::HashSet;
-    use ark_ff::{BigInt, BigInteger, PrimeField};
-    use ark_std::UniformRand;
-    use itertools::Itertools;
-    use proptest::prelude::{any};
-    use proptest::{prop_assert_eq, prop_assume, proptest};
-    use rand::prelude::StdRng;
-    use rand::SeedableRng;
     use crate::metal::abstraction::limbs_conversion::ark::{ArkFr, ArkG};
     use crate::metal::abstraction::limbs_conversion::ScalarGPU;
     use crate::metal::abstraction::state::MetalState;
-    use crate::metal::msm::{encode_instances, setup_metal_state};
     use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
+    use crate::metal::msm::{encode_instances, setup_metal_state};
     use crate::metal::tests::init_logger;
+    use ark_ff::{BigInt, BigInteger, PrimeField};
+    use ark_std::UniformRand;
+    use itertools::Itertools;
+    use proptest::prelude::any;
+    use proptest::{prop_assert_eq, prop_assume, proptest};
+    use rand::prelude::StdRng;
+    use rand::SeedableRng;
+    use std::collections::HashSet;
 
     // Helper function to get a scalar fragment
     // This function copies the logic from the Metal shader UnsignedInteger right shift
     fn get_scalar_fragment<S: ScalarGPU<8>>(scalar: &S, window_start: u32) -> u32 {
         let a = (window_start / 32) as usize; // Number of whole limbs to shift
-        let b = window_start % 32;            // Number of bits to shift within a limb
+        let b = window_start % 32; // Number of bits to shift within a limb
 
         #[allow(non_snake_case)]
         let NUM_LIMBS: usize = S::N;
@@ -101,14 +98,11 @@ mod test {
         let mut buckets_indices = HashSet::new();
 
         for (point_idx, scalar) in scalars.iter().enumerate() {
-
             let window_starts = (0..num_windows).map(|i| i * window_size);
 
             for (i, window_start) in window_starts.enumerate() {
-
                 let mut scalar_fragment = get_scalar_fragment(scalar, window_start);
                 scalar_fragment &= buckets_len;
-
 
                 if scalar_fragment != 0 {
                     let bucket_idx = i as u32 * buckets_len + scalar_fragment - 1;
@@ -125,7 +119,6 @@ mod test {
 
     #[test]
     fn test_prepare_buckets_indices_smaller() {
-
         init_logger();
 
         // Setup MetalMsmConfig with mock pipelines
@@ -147,7 +140,8 @@ mod test {
         prepare_buckets_indices(&config, &instance);
 
         // Retrieve the results from the GPU buffer
-        let gpu_buckets_indices_flat = MetalState::retrieve_contents::<u32>(&instance.data.buckets_indices_buffer);
+        let gpu_buckets_indices_flat =
+            MetalState::retrieve_contents::<u32>(&instance.data.buckets_indices_buffer);
 
         // Convert flat GPU output to a HashSet of tuples
         let gpu_buckets_indices: HashSet<(u32, u32)> = gpu_buckets_indices_flat
@@ -174,7 +168,6 @@ mod test {
         // Compare GPU results with Rust implementation
         assert_eq!(gpu_buckets_indices, rust_buckets_indices);
     }
-
 
     proptest! {
         #[test]

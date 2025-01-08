@@ -1,7 +1,7 @@
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
+use rayon::prelude::ParallelSliceMut;
 #[cfg(feature = "h2c")]
 use std::sync::{Arc, Condvar, Mutex};
-use rayon::prelude::ParallelSliceMut;
-use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 
 #[cfg(feature = "h2c")]
 lazy_static::lazy_static! {
@@ -21,10 +21,7 @@ lazy_static::lazy_static! {
 /// # Returns
 ///
 /// * `()` - The function modifies the `buckets_indices_buffer` in-place.
-pub fn sort_buckets_indices(
-    _config: &MetalMsmConfig,
-    instance: &MetalMsmInstance,
-) {
+pub fn sort_buckets_indices(_config: &MetalMsmConfig, instance: &MetalMsmInstance) {
     // Retrieve the raw metal::Buffer
     let buffer = &instance.data.buckets_indices_buffer;
 
@@ -44,7 +41,6 @@ pub fn sort_buckets_indices(
     // At this point, 'pair_slice' is sorted in place in GPU-shared memory.
     // Hence, we can stop here.
 
-
     // Unlock the static value and notify the CPU thread
     #[cfg(feature = "h2c")]
     {
@@ -55,15 +51,11 @@ pub fn sort_buckets_indices(
     }
 }
 
-
 /// Creates a MetalMsmInstance with the given (u32) data in the buckets_indices_buffer.
 /// This is a mock/truncated approach. Adjust as needed to fit your actual code.
-pub fn create_test_instance(
-    config: &mut MetalMsmConfig,
-    data: Vec<u32>,
-) -> MetalMsmInstance {
+pub fn create_test_instance(config: &mut MetalMsmConfig, data: Vec<u32>) -> MetalMsmInstance {
     // We'll create a minimal MetalMsmInstance with only the buckets_indices_buffer set
-    use crate::metal::msm::{MetalMsmParams, MetalMsmData};
+    use crate::metal::msm::{MetalMsmData, MetalMsmParams};
 
     let length = data.len() / 2;
     let buckets_indices_buffer = config.state.alloc_buffer_data(&data);
@@ -94,16 +86,15 @@ pub fn create_test_instance(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metal::abstraction::state::MetalState;
     use crate::metal::msm::setup_metal_state;
-    use std::collections::HashSet;
+    use crate::metal::tests::init_logger;
     use proptest::prelude::*;
     use rand::SeedableRng;
-    use crate::metal::abstraction::state::MetalState;
-    use crate::metal::tests::init_logger;
+    use std::collections::HashSet;
 
     /// We define a small GPU wrapper for testing
     fn sort_on_gpu(config: &MetalMsmConfig, instance: &MetalMsmInstance) -> Vec<u32> {
@@ -122,14 +113,7 @@ mod tests {
         // Suppose we have a small set of pairs (u32, u32):
         // (15, 2), (10, 1), (500, 3), (0, 0) ...
         // We'll place them in instance.data.buckets_indices_buffer as a flat Vec<u32>
-        let data = vec![
-            15, 2,
-            10, 1,
-            500, 3,
-            0, 0,
-            10, 2,
-            10, 3,
-        ];
+        let data = vec![15, 2, 10, 1, 500, 3, 0, 0, 10, 2, 10, 3];
 
         // Build a mock instance
         let instance = create_test_instance(&mut config, data.clone());
@@ -157,7 +141,6 @@ mod tests {
             assert!(prev.0 <= x, "GPU sort failed: {:?} > {:?}", prev, (x, y));
             prev = (x, y);
         }
-
     }
 
     proptest! {

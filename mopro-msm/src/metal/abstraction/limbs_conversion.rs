@@ -1,6 +1,8 @@
-use std::ops::Add;
 use rand::RngCore;
-use rayon::prelude::{ParallelSliceMut, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
+use rayon::prelude::{
+    IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator, ParallelSliceMut,
+};
+use std::ops::Add;
 
 pub trait ToLimbs<const N: usize> {
     /// Writes this object’s limbs directly into `out`.
@@ -39,27 +41,33 @@ where
 }
 
 pub trait FromLimbs {
-    const U32_SIZE : usize;
+    const U32_SIZE: usize;
 
     fn from_u32_limbs(limbs: &[u32]) -> Self;
 }
 
-pub trait ScalarGPU<const N: usize> : ToLimbs<N> {
-    const N : usize = N;
-    const MODULUS_BIT_SIZE : usize;
+pub trait ScalarGPU<const N: usize>: ToLimbs<N> {
+    const N: usize = N;
+    const MODULUS_BIT_SIZE: usize;
 
     fn random(rng: &mut impl RngCore) -> Self;
 
-    fn into<B : ScalarGPU<N> + FromLimbs>(&self) -> B {
-        assert_eq!(Self::MODULUS_BIT_SIZE, B::MODULUS_BIT_SIZE, "Incompatible scalar sizes");
+    fn into<B: ScalarGPU<N> + FromLimbs>(&self) -> B {
+        assert_eq!(
+            Self::MODULUS_BIT_SIZE,
+            B::MODULUS_BIT_SIZE,
+            "Incompatible scalar sizes"
+        );
         B::from_u32_limbs(&self.to_u32_limbs())
     }
 }
 
-pub trait PointGPU<const N: usize> : FromLimbs + ToLimbs<N> + Add<Self, Output = Self> + Sized + Clone  {
+pub trait PointGPU<const N: usize>:
+    FromLimbs + ToLimbs<N> + Add<Self, Output = Self> + Sized + Clone
+{
     fn random(rng: &mut impl RngCore) -> Self;
 
-    fn into<B : PointGPU<N>>(&self) -> B {
+    fn into<B: PointGPU<N>>(&self) -> B {
         assert_eq!(Self::U32_SIZE, B::U32_SIZE, "Incompatible point sizes");
         B::from_u32_limbs(&self.to_u32_limbs())
     }
@@ -148,8 +156,7 @@ pub mod ark {
 
         // convert from big endian to little endian for metal
         fn from_u32_limbs(limbs: &[u32]) -> Self {
-            let a = ArkFq::new_unchecked(BigInteger256::from_u32_limbs(limbs));
-            a
+            ArkFq::new_unchecked(BigInteger256::from_u32_limbs(limbs))
         }
     }
 
@@ -177,7 +184,7 @@ pub mod ark {
                 ArkFq::from_u32_limbs(&limbs[0..8]),
                 ArkFq::from_u32_limbs(&limbs[8..16]),
                 ArkFq::from_u32_limbs(&limbs[16..24]),
-        )
+            )
         }
     }
 
@@ -199,7 +206,6 @@ pub mod h2c {
     use halo2curves::group::{Curve, Group};
     use halo2curves::serde::SerdeObject;
     use rand::RngCore;
-
 
     use std::io::Write;
 
@@ -276,30 +282,33 @@ pub mod h2c {
     impl ToLimbs<8> for H2Fr {
         fn write_u32_limbs(&self, mut out: &mut [u32]) {
             let input = self.to_bytes(); // 32 bytes
-            // Fill out[] in reverse order of 4-byte chunks
+                                         // Fill out[] in reverse order of 4-byte chunks
             bytes_to_u32_reverse(&input, &mut out);
         }
     }
 
     impl ToLimbs<8> for H2Fq {
-    fn write_u32_limbs(&self, out: &mut [u32]) {
-        // Ensure the output buffer has enough space
-        debug_assert!(out.len() >= 8, "Output buffer must have at least 8 elements");
+        fn write_u32_limbs(&self, out: &mut [u32]) {
+            // Ensure the output buffer has enough space
+            debug_assert!(
+                out.len() >= 8,
+                "Output buffer must have at least 8 elements"
+            );
 
-        // Create a fixed-size byte array
-        let mut buffer = [0u8; 32];
+            // Create a fixed-size byte array
+            let mut buffer = [0u8; 32];
 
-        // Create a SliceWriter to write directly into the buffer
-        {
-            let mut writer = SliceWriter::new(&mut buffer);
-            self.write_raw(&mut writer).expect("Failed to write raw bytes");
+            // Create a SliceWriter to write directly into the buffer
+            {
+                let mut writer = SliceWriter::new(&mut buffer);
+                self.write_raw(&mut writer)
+                    .expect("Failed to write raw bytes");
+            }
+
+            // Convert the byte buffer to limbs using the optimized utility function
+            bytes_to_u32_reverse(&buffer, out);
         }
-
-        // Convert the byte buffer to limbs using the optimized utility function
-        bytes_to_u32_reverse(&buffer, out);
     }
-}
-
 
     impl ToLimbs<24> for H2G {
         fn write_u32_limbs(&self, out: &mut [u32]) {
@@ -360,7 +369,8 @@ pub mod h2c {
                 H2Fq::from_u32_limbs(&limbs[0..8]),
                 H2Fq::from_u32_limbs(&limbs[8..16]),
                 H2Fq::from_u32_limbs(&limbs[16..24]),
-            ).expect("Failed to create `new_jacobian` point from limbs")
+            )
+            .expect("Failed to create `new_jacobian` point from limbs")
         }
     }
 
@@ -370,7 +380,6 @@ pub mod h2c {
         fn from_u32_limbs(limbs: &[u32]) -> Self {
             H2G::from_u32_limbs(limbs).to_affine()
         }
-
     }
 
     impl PointGPU<24> for H2G {
@@ -389,6 +398,7 @@ mod test {
     use crate::metal::abstraction::limbs_conversion::ark::{ArkFq, ArkFr, ArkG};
     #[cfg(feature = "h2c")]
     use crate::metal::abstraction::limbs_conversion::h2c::{H2Fq, H2Fr, H2G};
+    use crate::metal::tests::init_logger;
     #[cfg(feature = "ark")]
     use ark_ec::{AffineRepr, CurveGroup};
     #[cfg(feature = "ark")]
@@ -399,7 +409,7 @@ mod test {
     use halo2curves::{
         ff::Field as H2Field,
         group::prime::PrimeCurveAffine,
-        group::{Curve, Group}
+        group::{Curve, Group},
     };
     use proptest::arbitrary::any;
     use proptest::prelude::{prop, ProptestConfig};
@@ -407,7 +417,6 @@ mod test {
     use rand::prelude::StdRng;
     use rand::SeedableRng;
     use std::ops::Mul;
-    use crate::metal::tests::init_logger;
 
     #[cfg(feature = "h2c")]
     prop_compose! {
@@ -457,7 +466,7 @@ mod test {
         }
     }
 
-proptest! {
+    proptest! {
 
         #![proptest_config(ProptestConfig::with_cases(100))]
 

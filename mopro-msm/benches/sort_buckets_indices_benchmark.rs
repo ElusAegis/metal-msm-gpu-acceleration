@@ -1,18 +1,13 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use mopro_msm::metal::msm::sort_buckets::sort_buckets_indices;
+use mopro_msm::metal::msm::{setup_metal_state, sort_buckets};
+use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::rngs::StdRng;
-use mopro_msm::metal::msm::{setup_metal_state, sort_buckets};
-use mopro_msm::metal::msm::sort_buckets::sort_buckets_indices;
 
 fn benchmark_sort_buckets_indices(c: &mut Criterion) {
     // Define the different lengths based on the modes
-    let modes = [
-        16,
-        18,
-        20,
-        22,
-    ];
+    let modes = [16, 18, 20, 22];
 
     // Initialize the Criterion benchmark group
     let mut group = c.benchmark_group("sort_buckets_indices");
