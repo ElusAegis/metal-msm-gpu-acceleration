@@ -1,8 +1,8 @@
 //
-//  mopro_testApp.swift
-//  mopro-test
+//  gpu_accelerationApp.swift
+//  gpu-acceleration
 //
-//  Created by Chance on 6/25/24.
+//  Created by Artem Grigor on 08/01/2025.
 //
 
 import SwiftUI
@@ -11,7 +11,7 @@ import SwiftUI
 struct gpu_accelerationApp: App {
     var body: some Scene {
         WindowGroup {
-            MSMBenchmarkView()
+            ContentView()
         }
     }
 }
