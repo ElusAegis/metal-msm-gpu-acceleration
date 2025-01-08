@@ -124,8 +124,10 @@ fn setup_rebuild() {
     println!("cargo:rerun-if-changed=build.rs");
 }
 
-#[cfg(feature = "macos")]
 fn get_sdk() -> &'static str {
+    #[cfg(all(feature = "macos", feature = "ios"))]
+    compile_error!("Only one of the features macos or ios can be enabled");
+
     if cfg!(feature = "macos") {
         "macosx"
     } else if cfg!(feature = "ios") {
