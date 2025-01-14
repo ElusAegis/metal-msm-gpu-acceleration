@@ -8,6 +8,7 @@ use std::env;
 
 /// Structure for abstracting basic calls to a Metal device and saving the state. Used for
 /// implementing GPU parallel computations in Apple machines.
+#[derive(Clone)]
 pub struct MetalState {
     pub device: metal::Device,
     pub library: metal::Library,

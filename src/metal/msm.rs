@@ -17,6 +17,10 @@ use crate::utils::preprocess::MsmInstance;
 use metal::*;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use std::time::Instant;
+use lazy_static::lazy_static;
+
+// Global optional config to be reused
+static GLOBAL_METAL_CONFIG: Lazy<Mutex<Option<MetalMsmConfig>>> = Lazy::new(|| Mutex::new(None));
 
 pub struct MetalMsmData {
     pub window_size_buffer: Buffer,
@@ -39,6 +43,7 @@ pub struct MetalMsmParams {
     pub window_num: u32,
 }
 
+ #[derive(Clone)]
 pub struct MetalMsmPipeline {
     pub prepare_buckets_indices: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
@@ -46,6 +51,7 @@ pub struct MetalMsmPipeline {
     pub sum_reduction_final: ComputePipelineState,
 }
 
+#[derive(Clone)]
 pub struct MetalMsmConfig {
     pub state: MetalState,
     pub pipelines: MetalMsmPipeline,
@@ -80,6 +86,29 @@ pub fn setup_metal_state() -> MetalMsmConfig {
             sum_reduction_final,
         },
     }
+}
+
+pub fn setup_metal_state_reusable() -> MetalMsmConfig {
+    let mut config_guard = GLOBAL_METAL_CONFIG.lock().unwrap();
+    if let Some(config) = config_guard.clone() {
+        log::debug!("MetalMsmConfig already initialized; reusing existing config.");
+        config
+    } else {
+        let config = setup_metal_state(); // Your original function
+        *config_guard = Some(config);
+        log::debug!("MetalMsmConfig initialized globally!");
+        config_guard.clone().expect("Failed to initialize MetalMsmConfig")
+    }
+}
+
+/// Retrieve a (cloned) `MetalMsmConfig` from the global static.
+/// If you need an actual mutable reference to the *same* config,
+/// you must be careful about concurrency.
+pub fn get_global_metal_config() -> MetalMsmConfig {
+    let config_guard = GLOBAL_METAL_CONFIG.lock().unwrap();
+    config_guard
+        .clone()
+        .expect("MetalMsmConfig must be initialized before use.")
 }
 
 pub fn encode_instances<
@@ -283,7 +312,7 @@ where
 
     // Step 3: Setup GPU
     let setup_time = Instant::now();
-    let mut config = setup_metal_state();
+    let mut config = setup_metal_state_reusable();
     log::debug!("Config Setup Time: {:?}", setup_time.elapsed());
 
     // Step 4: Perform the GPU computation
