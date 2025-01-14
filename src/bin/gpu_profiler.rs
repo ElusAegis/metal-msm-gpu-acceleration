@@ -58,10 +58,11 @@ fn main() {
         .map(|p| p.to_affine())
         .collect::<Vec<_>>();
 
-    let start_execution = instant::Instant::now();
 
     // Process MSM instances based on the run mode
-    for instance in instances {
+    for (i, instance) in instances.iter().enumerate() {
+        let start_execution = instant::Instant::now();
+
         match run_mode.as_str() {
             #[cfg(all(feature = "ark", not(feature = "h2c")))]
             "gpu" => {
@@ -94,12 +95,20 @@ fn main() {
             "cpu" => {
                 let _ = halo2curves::msm::msm_best(&instance.scalars, &affine_points);
             }
+            #[cfg(feature = "h2c")]
+            "check" => {
+                let res1 = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points).to_affine();
+                let res2 = halo2curves::msm::msm_best(&instance.scalars, &affine_points).to_affine();
+                assert_eq!(res1, res2);
+            }
             _ => {
                 log::error!("Invalid RUN_MODE: {}", run_mode);
                 std::process::exit(1);
             }
         }
+
+        log::info!("#{i}: Total Execution Time: {:?}", start_execution.elapsed());
+
     }
 
-    log::info!("Total Execution Time: {:?}", start_execution.elapsed());
 }

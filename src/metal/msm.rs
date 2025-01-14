@@ -4,8 +4,10 @@ pub mod prepare_buckets_indices;
 pub mod sort_buckets;
 pub mod sum_reduction;
 
+use std::cmp::PartialEq;
 use crate::metal::abstraction::{errors::MetalError, state::*};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::sleep;
 // For benchmarking
 use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
@@ -18,6 +20,20 @@ use metal::*;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use std::time::Instant;
 use lazy_static::lazy_static;
+use log::log;
+use once_cell::sync::Lazy;
+
+#[derive(PartialEq)]
+enum CpuState {
+    Free,
+    GpuBusy,
+    CpuBusy,
+}
+
+#[cfg(feature = "h2c")]
+lazy_static! {
+    static ref CPU_HEAVY_WORKLOAD_GUARD: Arc<(Mutex<CpuState>, Condvar)> = Arc::new((Mutex::new(CpuState::Free), Condvar::new()));
+}
 
 // Global optional config to be reused
 static GLOBAL_METAL_CONFIG: Lazy<Mutex<Option<MetalMsmConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -353,30 +369,69 @@ where
     // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
     let split_at = if scalar.len() < 2usize.pow(18) {
         scalar.len() * 1 / 3
+    } else if scalar.len() < 2usize.pow(20) {
+        scalar.len() * 1 / 2
     } else {
-        scalar.len() * 3 / 5
+        scalar.len() * 2 / 5
     };
 
     let (scalar_1, scalar_2) = scalar.split_at(split_at);
     let (point_1, point_2) = points.split_at(split_at);
 
+    // Wait for the other CPU heavy workload to finish before starting the GPU MSM
+    // This is because the sorting is CPU bound, and we want to avoid CPU contention
+    let (lock, cvar) = &*CPU_HEAVY_WORKLOAD_GUARD.clone();
+
+    {
+        // Wait for the other CPU heavy workload to finish
+        let mut cpu_state = lock.lock().unwrap();
+        while *cpu_state != CpuState::Free {
+            cpu_state = cvar.wait(cpu_state).unwrap();
+        }
+
+        // Lock the value
+        *cpu_state = CpuState::GpuBusy;
+    }
+
+    log::info!("> New Workload Started");
+
     // Use Rayon to run GPU and CPU tasks in parallel
     let (gpu_result, cpu_result) = rayon::join(
-        || gpu_msm_h2c::<C, PIN, POUT, S>(scalar_1, point_1),
         || {
-            // Wait for the GPU MSM to pass the sorting stage before starting the CPU MSM
-            // This is because the sorting is CPU bound, and we want to avoid CPU contention
-            let (lock, cvar) = &*sort_buckets::CPU_SORT_FINISHED.clone();
+            let gpu_start = Instant::now();
+
+            // We release the lock after sorting is done
+            let res = gpu_msm_h2c::<C, PIN, POUT, S>(scalar_1, point_1);
+
+            log::info!("> GPU Time: {:?}", gpu_start.elapsed());
+
+            res
+        },
+        || {
+            log::debug!("NEXT ACQUIRING LOCK");
 
             // Wait for the GPU thread to unlock the value
-            let mut started = lock.lock().unwrap();
-            while !*started {
-                started = cvar.wait(started).unwrap();
+            let mut free = lock.lock().unwrap();
+            log::debug!("ACQUIRED LOCK");
+            while *free != CpuState::CpuBusy {
+                log::debug!("WAITING");
+                free = cvar.wait(free).unwrap();
             }
-            // Reset the value for the next iteration
-            *started = false;
 
-            halo2curves::msm::msm_best(scalar_2, point_2)
+            log::info!("> CPU Heavy Workload Started");
+
+            let cpu_start = Instant::now();
+
+            let res = halo2curves::msm::msm_best(scalar_2, point_2);
+
+            // Reset the value for the next iteration
+            // Notify only one waiting thread to avoid contention
+            *free = CpuState::Free;
+            cvar.notify_all();
+
+            log::info!("> CPU Time: {:?}", cpu_start.elapsed());
+
+            res
         },
     );
 
@@ -392,7 +447,11 @@ where
     POUT: PointGPU<24> + Sync,   // GPU-compatible point type
     S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
-    gpu_with_cpu::<C, PIN, POUT, S>(scalars, points)
+    if scalars.len() >= 2_usize.pow(17) {
+        gpu_with_cpu::<C, PIN, POUT, S>(scalars, points)
+    } else {
+        halo2curves::msm::msm_best(scalars, points)
+    }
 }
 
 #[cfg(test)]
