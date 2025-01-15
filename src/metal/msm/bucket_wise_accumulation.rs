@@ -7,6 +7,7 @@
 use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 use metal::MTLSize;
 use objc::rc::autoreleasepool;
+use crate::config::ConfigManager;
 
 /// Dispatches the `bucket_wise_accumulation` Metal shader kernel.
 /// This kernel reads:
@@ -35,7 +36,7 @@ pub fn bucket_wise_accumulation(config: &MetalMsmConfig, instance: &MetalMsmInst
     }
 
     // For safety, clamp the max GPU threads
-    let desired_pairs_per_thread = 128;
+    let desired_pairs_per_thread = ConfigManager::default().desired_pairs_per_thread() as u64;
     let actual_threads =
         ((params.instances_size * params.window_num) as u64 + desired_pairs_per_thread - 1)
             / desired_pairs_per_thread;

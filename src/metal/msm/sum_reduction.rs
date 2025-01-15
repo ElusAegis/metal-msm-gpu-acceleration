@@ -7,9 +7,9 @@
 //! exactly one window. Then partial sums are reduced in threadgroup shared memory.
 
 use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
-use instant::Instant;
 use metal::MTLSize;
 use objc::rc::autoreleasepool;
+use crate::config::ConfigManager;
 
 fn sum_reduction_partial(
     config: &MetalMsmConfig,
@@ -31,11 +31,12 @@ fn sum_reduction_partial(
 
     // Decide how many threads per group (similar logic to your original).
     // We'll clamp by pipeline max, etc.
+    let min_max_threads = ConfigManager::default().min_max_threads() as u64;
     let max_threads = config
         .pipelines
         .sum_reduction_partial
         .max_total_threads_per_threadgroup()
-        .min(32); // some heuristic, for window size 15
+        .min(min_max_threads); // some heuristic, for window size 15
                   // For example:
     let threads_per_group = max_threads;
 
@@ -159,25 +160,15 @@ pub fn sum_reduction_final(
 /// - We have `params.num_window` windows => #threadgroups = `params.num_window`.
 /// - We choose `threads_per_group` so that each group can sum `buckets_len = (1<<window_size)-1` buckets in parallel.
 pub fn sum_reduction(config: &MetalMsmConfig, instance: &MetalMsmInstance) {
-    let buckets_per_threadgroup = 4096; // some heuristic for window size 15
+    let buckets_per_threadgroup = ConfigManager::default().buckets_per_threadgroup();
     let groups_per_window = (instance.params.buckets_size + 1).div_ceil(buckets_per_threadgroup);
 
     // Stage 1: Partial reduction
-    let partial_reduction_start = Instant::now();
     let partial_results_buffer = sum_reduction_partial(config, instance, groups_per_window)
         .expect("sum_reduction_partial failed");
-    log::debug!(
-        "(reduction) Partial reduction took {:?}",
-        partial_reduction_start.elapsed()
-    );
 
     // Stage 2: Final reduction
-    let final_reduction_start = Instant::now();
     sum_reduction_final(config, instance, &partial_results_buffer, groups_per_window);
-    log::debug!(
-        "(reduction) Final reduction took {:?}",
-        final_reduction_start.elapsed()
-    );
 }
 
 #[cfg(all(test, feature = "ark"))] // FIXME - make the tests also work when h2c feature is active

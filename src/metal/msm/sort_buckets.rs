@@ -1,4 +1,4 @@
-use crate::metal::msm::{CpuState, MetalMsmConfig, MetalMsmInstance, CPU_HEAVY_WORKLOAD_GUARD};
+use crate::metal::msm::{MetalMsmConfig, MetalMsmInstance};
 use rayon::prelude::ParallelSliceMut;
 
 /// Executes the `sort_buckets` Metal shader kernel.
@@ -31,15 +31,6 @@ pub fn sort_buckets_indices(_config: &MetalMsmConfig, instance: &MetalMsmInstanc
 
     // At this point, 'pair_slice' is sorted in place in GPU-shared memory.
     // Hence, we can stop here.
-
-    // Unlock the static value and notify the CPU thread
-    #[cfg(feature = "h2c")]
-    {
-        let (lock, cvar) = &*CPU_HEAVY_WORKLOAD_GUARD.clone();
-        let mut free = lock.lock().unwrap();
-        *free = CpuState::CpuBusy; // Unlock the value
-        cvar.notify_all(); // Notify the waiting CPU thread, there should be only one waiting for this value
-    }
 }
 
 /// Creates a MetalMsmInstance with the given (u32) data in the buckets_indices_buffer.
