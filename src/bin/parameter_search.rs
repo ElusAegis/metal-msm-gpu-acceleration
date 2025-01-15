@@ -244,12 +244,6 @@ fn main() {
                                 best_time, best_config
                             );
                         }
-
-                        // If below 60 ms, stop searching
-                        if best_time < 60.0 {
-                            log::warn!("\n[STOP] Achieved <60 ms average. Stopping early.");
-                            break 'outer;
-                        }
                     }
                 }
             }
