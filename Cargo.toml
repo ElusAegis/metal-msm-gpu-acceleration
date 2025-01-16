@@ -11,6 +11,7 @@ name = "mopro_msm"
 
 [[bin]]
 name = "gpu_profiler"
+required-features = ["h2c"]
 
 [[bin]]
 name = "gen_ios_bindings"

@@ -5,7 +5,8 @@ pub mod sort_buckets;
 pub mod sum_reduction;
 
 use crate::metal::abstraction::{errors::MetalError, state::*};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "h2c")]
 use std::thread::scope;
 // For benchmarking
 use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
@@ -15,11 +16,14 @@ use crate::metal::msm::prepare_buckets_indices::prepare_buckets_indices;
 use crate::metal::msm::sort_buckets::sort_buckets_indices;
 use crate::metal::msm::sum_reduction::sum_reduction;
 use crate::utils::preprocess::MsmInstance;
-use metal::*;
-use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator, IndexedParallelIterator};
-use std::time::Instant;
+#[cfg(feature = "h2c")]
 use lazy_static::lazy_static;
+use metal::*;
 use once_cell::sync::Lazy;
+#[cfg(feature = "h2c")]
+use rayon::prelude::{IndexedParallelIterator, IntoParallelRefIterator};
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use std::time::Instant;
 
 // Global optional config to be reused
 static GLOBAL_METAL_CONFIG: Lazy<Mutex<Option<MetalMsmConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -45,7 +49,7 @@ pub struct MetalMsmParams {
     pub window_num: u32,
 }
 
- #[derive(Clone)]
+#[derive(Clone)]
 pub struct MetalMsmPipeline {
     pub prepare_buckets_indices: ComputePipelineState,
     pub bucket_wise_accumulation: ComputePipelineState,
@@ -99,7 +103,9 @@ pub fn setup_metal_state_reusable() -> MetalMsmConfig {
         let config = setup_metal_state(); // Your original function
         *config_guard = Some(config);
         log::debug!("MetalMsmConfig initialized globally!");
-        config_guard.clone().expect("Failed to initialize MetalMsmConfig")
+        config_guard
+            .clone()
+            .expect("Failed to initialize MetalMsmConfig")
     }
 }
 
@@ -175,7 +181,7 @@ pub fn encode_instances<
         params: MetalMsmParams {
             instances_size: instances_size as u32,
             buckets_size: buckets_size as u32,
-            window_size: window_size,
+            window_size,
             window_num: window_num as u32,
         },
     }
@@ -276,7 +282,11 @@ where
 }
 
 #[cfg(feature = "h2c")]
-pub fn gpu_msm_h2c_sync<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C], sync_pair: Arc<(Mutex<bool>, Condvar)>) -> C::Curve
+pub fn gpu_msm_h2c_sync<C, PIN, POUT, S>(
+    scalars: &[C::Scalar],
+    points: &[C],
+    sync_pair: Arc<(Mutex<bool>, std::sync::Condvar)>,
+) -> C::Curve
 where
     C: halo2curves::CurveAffine, // Your curve type
     PIN: ToLimbs<24> + Sync,     // GPU-compatible point type
@@ -349,7 +359,6 @@ where
         cvar.notify_one();
     }
 
-
     let accumulation_time = Instant::now();
     bucket_wise_accumulation(&config, &instance);
     log::debug!(
@@ -381,7 +390,6 @@ where
         std::ptr::read(&msm_result as *const POUT as *const C::Curve)
     };
 
-
     // Drop the lock to allow the CPU thread to proceed
     drop(_guard);
 
@@ -396,7 +404,11 @@ where
     POUT: PointGPU<24> + Sync,   // GPU-compatible point type
     S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
-    gpu_msm_h2c_sync::<C, PIN, POUT, S>(scalars, points, Arc::new((Mutex::new(false), Condvar::new())))
+    gpu_msm_h2c_sync::<C, PIN, POUT, S>(
+        scalars,
+        points,
+        Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+    )
 }
 
 #[cfg(feature = "h2c")]
@@ -421,7 +433,7 @@ where
     let (point_1, point_2) = points.split_at(split_at);
 
     // Create a shared Arc<Condvar> to synchronize GPU and CPU
-    let sync_pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let sync_pair = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let sync_pair_for_cpu = Arc::clone(&sync_pair);
 
     // Use crossbeam::scope to allow using non-'static references in threads
@@ -480,7 +492,10 @@ where
 }
 
 #[cfg(feature = "h2c")]
-fn filter_zeros<C: halo2curves::CurveAffine>(scalars: &[C::Scalar], points: &[C]) -> Option<(Vec<C::Scalar>, Vec<C>)> {
+fn filter_zeros<C: halo2curves::CurveAffine>(
+    scalars: &[C::Scalar],
+    points: &[C],
+) -> Option<(Vec<C::Scalar>, Vec<C>)> {
     use halo2curves::ff::Field;
 
     let total_scalars = scalars.len();
@@ -501,8 +516,12 @@ fn filter_zeros<C: halo2curves::CurveAffine>(scalars: &[C::Scalar], points: &[C]
     let zero_ratio = zero_count as f64 / total_scalars as f64;
     let threshold = 0.30; // or configure as needed
 
-    log::debug!("zero_count = {}, total_scalars = {}, zero_ratio = {:.2}",
-                zero_count, total_scalars, zero_ratio);
+    log::debug!(
+        "zero_count = {}, total_scalars = {}, zero_ratio = {:.2}",
+        zero_count,
+        total_scalars,
+        zero_ratio
+    );
 
     if threshold > zero_ratio {
         return None;
@@ -528,8 +547,7 @@ fn filter_zeros<C: halo2curves::CurveAffine>(scalars: &[C::Scalar], points: &[C]
 
     // Unzip in parallel
     let unbundling_time = Instant::now();
-    let (loc_scalars, loc_points) =
-        filtered.into_par_iter().unzip();
+    let (loc_scalars, loc_points) = filtered.into_par_iter().unzip();
     log::debug!("Unbundling Time: {:?}", unbundling_time.elapsed());
 
     Some((loc_scalars, loc_points))
@@ -556,7 +574,7 @@ mod tests {
             init_logger();
 
             let mut metal_config = setup_metal_state();
-            let rng = OsRng::default();
+            let rng = OsRng;
 
             let instances = get_or_create_msm_instances::<ArkG, ArkFr>(
                 LOG_INSTANCE_SIZE,
@@ -594,7 +612,7 @@ mod tests {
         fn test_parallel_gpu_metal_msm_correctness() {
             init_logger();
 
-            let rng = OsRng::default();
+            let rng = OsRng;
             let mut metal_config = setup_metal_state();
 
             let instances = get_or_create_msm_instances::<ArkG, ArkFr>(
@@ -641,12 +659,12 @@ mod tests {
         use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
         use crate::metal::msm::tests::{LOG_INSTANCE_SIZE, NUM_INSTANCE};
         use crate::metal::msm::{gpu_msm_h2c, gpu_with_cpu};
+        use crate::metal::msm_best;
         use crate::metal::tests::init_logger;
         use crate::utils::preprocess::get_or_create_msm_instances;
         use halo2curves::group::Curve;
         use rand::rngs::OsRng;
         use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-        use crate::metal::msm_best;
 
         #[test]
         fn test_gpu_msm_correctness_medium_sample_h2c() {

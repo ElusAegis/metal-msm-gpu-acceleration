@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(rust_res.len(), window_num);
 
         // Compare the results
-        for j in 0..window_num as usize {
+        for j in 0..window_num {
             assert_eq!(
                 gpu_res[j], rust_res[j],
                 "Mismatch in window j={}: GPU={:?}, Rust={:?}",

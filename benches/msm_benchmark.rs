@@ -12,9 +12,7 @@ use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G}
 #[cfg(all(feature = "h2c", not(feature = "ark")))]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::metal::msm::{
-   metal_msm_parallel, setup_metal_state,
-};
+use mopro_msm::metal::msm::{metal_msm_parallel, setup_metal_state};
 use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use rand::rngs::OsRng;
 use std::ops::Add;
@@ -46,7 +44,12 @@ pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
 fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmInstance<P, S>>) {
     let mut metal_config = setup_metal_state();
     for instance in instances {
-        let _result: P = mopro_msm::metal::msm::metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
+        let _result: P = mopro_msm::metal::msm::metal_msm(
+            &instance.points,
+            &instance.scalars,
+            &mut metal_config,
+        )
+        .unwrap();
     }
 }
 
@@ -69,7 +72,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
     bench_group.sample_size(20); // Number of iterations to run
     bench_group.measurement_time(Duration::from_secs(15)); // Total time per benchmark
 
-    let rng = OsRng::default();
+    let rng = OsRng;
 
     const LOG_INSTANCE_SIZE: u32 = 20;
     const NUM_INSTANCES: u32 = 5;
@@ -144,7 +147,7 @@ fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
     bench_group.sample_size(20); // Number of iterations to run
     bench_group.measurement_time(Duration::from_secs(15)); // Total time per benchmark
 
-    let rng = OsRng::default();
+    let rng = OsRng;
 
     const LOG_INSTANCE_SIZE: u32 = 16;
     const NUM_INSTANCES: u32 = 5;

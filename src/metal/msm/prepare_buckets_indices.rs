@@ -72,11 +72,11 @@ mod test {
 
         if b == 0 {
             // Shift by whole limbs only
-            return scalar_limbs[NUM_LIMBS - 1 - a];
+            scalar_limbs[NUM_LIMBS - 1 - a]
         } else {
             // Shift by limbs and bits
             // Ensure we don't underflow when accessing limbs
-            let high_limb = if NUM_LIMBS > 1 && (NUM_LIMBS - 1 >= a + 1) {
+            let high_limb = if NUM_LIMBS > 1 && (NUM_LIMBS > a + 1) {
                 scalar_limbs[NUM_LIMBS - 1 - a - 1]
             } else {
                 0

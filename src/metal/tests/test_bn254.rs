@@ -227,7 +227,7 @@ mod tests {
         prop_compose! {
             fn rand_field_element()(limbs in rand_limbs()) -> FE {
                 FE::from_be_bytes_mod_order(
-                    limbs.iter().map(|&x| x.to_be_bytes()).flatten().collect::<Vec<u8>>().as_slice()
+                    limbs.iter().flat_map(|&x| x.to_be_bytes()).collect::<Vec<u8>>().as_slice()
                 )
             }
         }
@@ -239,7 +239,7 @@ mod tests {
             fn add(a in rand_field_element(), b in rand_field_element()) {
                 let mut result = Fq::default();
                 objc::rc::autoreleasepool(|| {
-                    result = execute_kernel("fp_bn254_add", &a, Elem(b.clone()));
+                    result = execute_kernel("fp_bn254_add", &a, Elem(b));
                 });
                 // let a_str = FE::from_str("7916889888197395428851811989824083825259476282480692443637750063533633301235").unwrap();
                 // let b_str = FE::from_str("13971352983641879793394593755433191263436834874817131219051287831111592907349").unwrap();
@@ -259,7 +259,7 @@ mod tests {
             fn sub(a in rand_field_element(), b in rand_field_element()) {
                 let mut result = Fq::default();
                 objc::rc::autoreleasepool(|| {
-                    result = execute_kernel("fp_bn254_sub", &a, Elem(b.clone()));
+                    result = execute_kernel("fp_bn254_sub", &a, Elem(b));
                 });
                 let local_sub = a - b;
                 prop_assert_eq!(result, local_sub);
@@ -269,7 +269,7 @@ mod tests {
             fn mul(a in rand_field_element(), b in rand_field_element()) {
                 let mut result = Fq::default();
                 objc::rc::autoreleasepool(|| {
-                    result = execute_kernel("fp_bn254_mul", &a, Elem(b.clone()));
+                    result = execute_kernel("fp_bn254_mul", &a, Elem(b));
                 });
                 let local_mul = a * b;
                 prop_assert_eq!(result, local_mul);
@@ -291,7 +291,7 @@ mod tests {
                 objc::rc::autoreleasepool(|| {
                     result = execute_kernel("fp_bn254_pow", &a, Int(b));
                 });
-                let local_pow = a.pow(&[b as u64]);
+                let local_pow = a.pow([b as u64]);
                 prop_assert_eq!(result, local_pow);
             }
 

@@ -11,7 +11,6 @@ pub enum MoproError {
     Halo2Error(String),
 }
 
-
 #[cfg(all(feature = "ios-bindings", feature = "h2c"))]
 mod ios_bindings;
 

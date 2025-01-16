@@ -193,7 +193,7 @@ mod tests {
         let instance_size = points.len();
 
         // Fill bases_limbs using write_u32_limbs in parallel
-        let bases_limbs: Vec<u32> = points.iter().map(|p| p.to_u32_limbs()).flatten().collect();
+        let bases_limbs: Vec<u32> = points.iter().flat_map(|p| p.to_u32_limbs()).collect();
 
         let instance_data = MetalMsmData {
             window_size_buffer: config.state.alloc_buffer_data(&[0]),
@@ -621,7 +621,7 @@ mod tests {
             // bucket_index in [0..num_buckets)
             // point_index in [0..size)
             let mut buckets_indices = Vec::with_capacity(size);
-            let num_buckets = 1 << log_num_buckets * num_buckets_mul;
+            let num_buckets = 1 << (log_num_buckets * num_buckets_mul);
             for _ in 0..(size as u32 * num_indices_mul) {
                 let b_idx = rng.gen_range(0..num_buckets);
                 let p_idx = rng.gen_range(0..size as u32);

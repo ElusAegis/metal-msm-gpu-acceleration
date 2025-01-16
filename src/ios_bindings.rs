@@ -1,12 +1,10 @@
-use halo2curves::bn256::{Fr, G1Affine};
 use crate::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G};
+use halo2curves::bn256::{Fr, G1Affine};
 use halo2curves::ff::Field;
 use instant::Instant;
 
 #[uniffi::export]
-fn benchmark_h2c_metal_and_cpu_msm_best(
-    log_size: u32,
-) -> u64 {
+fn benchmark_h2c_metal_and_cpu_msm_best(log_size: u32) -> u64 {
     let (points, scalars) = prepare_instance(log_size);
 
     let start = Instant::now();
@@ -17,9 +15,7 @@ fn benchmark_h2c_metal_and_cpu_msm_best(
 }
 
 #[uniffi::export]
-fn benchmark_h2c_cpu_msm_best(
-    log_size: u32,
-) -> u64 {
+fn benchmark_h2c_cpu_msm_best(log_size: u32) -> u64 {
     let (points, scalars) = prepare_instance(log_size);
 
     let start = Instant::now();

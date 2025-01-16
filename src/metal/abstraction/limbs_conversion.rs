@@ -528,7 +528,7 @@ mod test {
             // Deserialize the limbs back into Fq elements
             let fs_prime: Vec<ArkFq> = list_limbs
                 .chunks_exact(8) // Assuming ArkFq has 8 limbs
-                .map(|chunk| ArkFq::from_u32_limbs(chunk))
+                .map(ArkFq::from_u32_limbs)
                 .collect();
 
             // Check that the original list and the deserialized list are equal
