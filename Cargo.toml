@@ -13,10 +13,6 @@ name = "mopro_msm"
 name = "gpu_profiler"
 
 [[bin]]
-name = "gpu_parallel"
-required-features = ["h2c"]
-
-[[bin]]
 name = "gen_ios_bindings"
 required-features = ["ios-bindings"]
 
