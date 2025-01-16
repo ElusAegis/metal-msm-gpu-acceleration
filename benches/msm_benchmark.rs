@@ -13,7 +13,7 @@ use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G}
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
 use mopro_msm::metal::msm::{
-    encode_instances, exec_metal_commands, metal_msm_parallel, setup_metal_state,
+   metal_msm_parallel, setup_metal_state,
 };
 use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use rand::rngs::OsRng;
@@ -42,13 +42,11 @@ pub fn msm_ark_cpu(instances: &Vec<(Vec<ArkGAffine>, Vec<ArkFr>)>) {
     }
 }
 
+#[cfg(feature = "ark")]
 fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmInstance<P, S>>) {
     let mut metal_config = setup_metal_state();
     for instance in instances {
-        let metal_instance =
-            encode_instances(&instance.points, &instance.scalars, &mut metal_config, None);
-
-        let _result: P = exec_metal_commands(&metal_config, metal_instance).unwrap();
+        let _result: P = mopro_msm::metal::msm::metal_msm(&instance.points, &instance.scalars, &mut metal_config).unwrap();
     }
 }
 
@@ -127,9 +125,11 @@ fn benchmark_msm(criterion: &mut Criterion) {
     });
 
     // Benchmark GPU implementation
+    #[cfg(feature = "ark")]
     bench_group.bench_function("msm_gpu", |b| b.iter(|| msm_gpu(&instances)));
 
     // Benchmark parallel GPU implementation
+    #[cfg(feature = "ark")]
     bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, None)));
 
     bench_group.finish();
