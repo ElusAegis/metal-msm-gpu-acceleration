@@ -4,10 +4,8 @@ pub mod prepare_buckets_indices;
 pub mod sort_buckets;
 pub mod sum_reduction;
 
-use std::cmp::PartialEq;
 use crate::metal::abstraction::{errors::MetalError, state::*};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread::sleep;
 // For benchmarking
 use crate::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU, ToLimbs};
 use crate::metal::msm::bucket_wise_accumulation::bucket_wise_accumulation;
@@ -19,21 +17,7 @@ use crate::utils::preprocess::MsmInstance;
 use metal::*;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use std::time::Instant;
-use lazy_static::lazy_static;
-use log::log;
 use once_cell::sync::Lazy;
-
-#[derive(PartialEq)]
-enum CpuState {
-    Free,
-    GpuBusy,
-    CpuBusy,
-}
-
-#[cfg(feature = "h2c")]
-lazy_static! {
-    static ref CPU_HEAVY_WORKLOAD_GUARD: Arc<(Mutex<CpuState>, Condvar)> = Arc::new((Mutex::new(CpuState::Free), Condvar::new()));
-}
 
 // Global optional config to be reused
 static GLOBAL_METAL_CONFIG: Lazy<Mutex<Option<MetalMsmConfig>>> = Lazy::new(|| Mutex::new(None));
@@ -358,6 +342,106 @@ where
 }
 
 #[cfg(feature = "h2c")]
+pub fn gpu_msm_h2c_sync<C, PIN, POUT, S>(scalars: &[C::Scalar], points: &[C], sync_pair: Arc<(Mutex<bool>, Condvar)>) -> C::Curve
+where
+    C: halo2curves::CurveAffine, // Your curve type
+    PIN: ToLimbs<24> + Sync,     // GPU-compatible point type
+    POUT: PointGPU<24> + Sync,   // GPU-compatible point type
+    S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
+{
+    // Step 1: Convert scalars to GPU representation
+    let gpu_scalars: &[S] = unsafe {
+        assert_eq!(
+            size_of::<C::Scalar>(),
+            size_of::<S>(),
+            "C::Scalar and S must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            align_of::<C::Scalar>(),
+            align_of::<S>(),
+            "C::Scalar and S must have the same alignment for reinterpret casting"
+        );
+        std::slice::from_raw_parts(scalars.as_ptr() as *const S, scalars.len())
+    };
+
+    // Step 2: Convert points to GPU representation
+    let gpu_points: &[PIN] = unsafe {
+        assert_eq!(
+            size_of::<C>(),
+            size_of::<PIN>(),
+            "C and P must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            align_of::<C>(),
+            align_of::<PIN>(),
+            "C and P must have the same alignment for reinterpret casting"
+        );
+        std::slice::from_raw_parts(points.as_ptr() as *const PIN, points.len())
+    };
+
+    // Step 3: Setup GPU
+    let setup_time = Instant::now();
+    let mut config = setup_metal_state_reusable();
+    log::debug!("Config Setup Time: {:?}", setup_time.elapsed());
+
+    // Step 4: Perform the GPU computation
+    let encode_time = Instant::now();
+    let instance = encode_instances(gpu_points, gpu_scalars, &mut config, None);
+    log::debug!("Encode Instances Time: {:?}", encode_time.elapsed());
+    let compute_time = Instant::now();
+    let prepare_time = Instant::now();
+    prepare_buckets_indices(&config, &instance);
+    log::debug!("Prepare buckets indices time: {:?}", prepare_time.elapsed());
+
+    let sort_time = Instant::now();
+    sort_buckets_indices(&config, &instance);
+
+    // Notify the CPU thread that GPU sorting is complete
+    {
+        let (lock, cvar) = &*sync_pair;
+        let mut gpu_done = lock.lock().unwrap();
+        *gpu_done = true;
+        cvar.notify_one();
+    }
+
+    log::debug!("Sort buckets indices time: {:?}", sort_time.elapsed());
+
+    let accumulation_time = Instant::now();
+    bucket_wise_accumulation(&config, &instance);
+    log::debug!(
+        "Bucket wise accumulation time: {:?}",
+        accumulation_time.elapsed()
+    );
+
+    let reduction_time = Instant::now();
+    sum_reduction(&config, &instance);
+    log::debug!("Sum reduction time: {:?}", reduction_time.elapsed());
+
+    let final_time = Instant::now();
+    let msm_result = final_accumulation::<POUT>(&config, &instance);
+    log::debug!("Final accumulation time: {:?}", final_time.elapsed());
+    log::debug!("Pure Compute Time: {:?}", compute_time.elapsed());
+
+    // Step 5: Convert GPU result to CPU representation
+    let cpu_result: C::Curve = unsafe {
+        assert_eq!(
+            std::mem::size_of::<C::Curve>(),
+            std::mem::size_of::<POUT>(),
+            "C and P must have the same size for reinterpret casting"
+        );
+        assert_eq!(
+            std::mem::align_of::<C::Curve>(),
+            std::mem::align_of::<POUT>(),
+            "C and P must have the same alignment for reinterpret casting"
+        );
+        std::ptr::read(&msm_result as *const POUT as *const C::Curve)
+    };
+
+    cpu_result
+}
+
+
+#[cfg(feature = "h2c")]
 pub fn gpu_with_cpu<C, PIN, POUT, S>(scalar: &[C::Scalar], points: &[C]) -> C::Curve
 where
     C: halo2curves::CurveAffine, // Your curve type
@@ -378,22 +462,9 @@ where
     let (scalar_1, scalar_2) = scalar.split_at(split_at);
     let (point_1, point_2) = points.split_at(split_at);
 
-    // Wait for the other CPU heavy workload to finish before starting the GPU MSM
-    // This is because the sorting is CPU bound, and we want to avoid CPU contention
-    let (lock, cvar) = &*CPU_HEAVY_WORKLOAD_GUARD.clone();
-
-    {
-        // Wait for the other CPU heavy workload to finish
-        let mut cpu_state = lock.lock().unwrap();
-        while *cpu_state != CpuState::Free {
-            cpu_state = cvar.wait(cpu_state).unwrap();
-        }
-
-        // Lock the value
-        *cpu_state = CpuState::GpuBusy;
-    }
-
-    log::info!("> New Workload Started");
+    // Create a shared Arc<Condvar> to synchronize GPU and CPU
+    let sync_pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let sync_pair_for_cpu = Arc::clone(&sync_pair);
 
     // Use Rayon to run GPU and CPU tasks in parallel
     let (gpu_result, cpu_result) = rayon::join(
@@ -401,35 +472,26 @@ where
             let gpu_start = Instant::now();
 
             // We release the lock after sorting is done
-            let res = gpu_msm_h2c::<C, PIN, POUT, S>(scalar_1, point_1);
+            let res = gpu_msm_h2c_sync::<C, PIN, POUT, S>(scalar_1, point_1, sync_pair);
 
-            log::info!("> GPU Time: {:?}", gpu_start.elapsed());
+            log::debug!("> GPU Time: {:?}", gpu_start.elapsed());
 
             res
         },
         || {
-            log::debug!("NEXT ACQUIRING LOCK");
 
-            // Wait for the GPU thread to unlock the value
-            let mut free = lock.lock().unwrap();
-            log::debug!("ACQUIRED LOCK");
-            while *free != CpuState::CpuBusy {
-                log::debug!("WAITING");
-                free = cvar.wait(free).unwrap();
+            // Wait for the GPU thread to send the completion signal
+            let (lock, cvar) = &*sync_pair_for_cpu;
+            let mut gpu_done = lock.lock().unwrap();
+            while !*gpu_done {
+                gpu_done = cvar.wait(gpu_done).unwrap();
             }
-
-            log::info!("> CPU Heavy Workload Started");
 
             let cpu_start = Instant::now();
 
             let res = halo2curves::msm::msm_best(scalar_2, point_2);
 
-            // Reset the value for the next iteration
-            // Notify only one waiting thread to avoid contention
-            *free = CpuState::Free;
-            cvar.notify_all();
-
-            log::info!("> CPU Time: {:?}", cpu_start.elapsed());
+            log::debug!("> CPU Time: {:?}", cpu_start.elapsed());
 
             res
         },
@@ -456,8 +518,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    const LOG_INSTANCE_SIZE: u32 = 18;
-    const NUM_INSTANCE: u32 = 10;
+    const LOG_INSTANCE_SIZE: u32 = 20;
+    const NUM_INSTANCE: u32 = 5;
 
     #[cfg(feature = "ark")]
     mod ark {
