@@ -456,7 +456,7 @@ where
     } else if scalar.len() < 2usize.pow(20) {
         scalar.len() * 1 / 2
     } else {
-        scalar.len() * 2 / 5
+        scalar.len() * 1 / 2
     };
 
     let (scalar_1, scalar_2) = scalar.split_at(split_at);
@@ -509,6 +509,67 @@ where
     POUT: PointGPU<24> + Sync,   // GPU-compatible point type
     S: ScalarGPU<8> + Sync,      // GPU-compatible scalar type
 {
+    use rayon::prelude::*;
+    use halo2curves::ff::Field;
+    use std::time::Instant;
+    use halo2curves::group::Group;
+
+    let total_scalars = scalars.len();
+    if total_scalars == 0 {
+        // Edge case: if no scalars at all, just return identity
+        return C::Curve::identity();
+    }
+
+    // 1) Count how many are zero
+    let counting_time = Instant::now();
+    let zero_count = scalars
+        .par_iter()
+        .filter(|scalar| bool::from(scalar.is_zero()))
+        .count();
+    log::debug!("Counting Time: {:?}", counting_time.elapsed());
+
+    // 2) Decide if we want to filter
+    //    If more than 50% (1/2) are zero, do filtering. Otherwise skip.
+    let zero_ratio = zero_count as f64 / total_scalars as f64;
+    let threshold = 0.30; // or configure as needed
+
+    log::debug!("zero_count = {}, total_scalars = {}, zero_ratio = {:.2}",
+                zero_count, total_scalars, zero_ratio);
+
+    let (loc_scalars, loc_points): (Vec<C::Scalar>, Vec<C>);
+
+
+     let (scalars, points) = if zero_ratio > threshold {
+        // --- FILTERING PATH ---
+        let filtering_time = Instant::now();
+
+        // Filter out zero scalars + corresponding points
+        let filtered: Vec<(C::Scalar, C)> = scalars
+            .par_iter()
+            .zip(points.par_iter())
+            .filter_map(|(scalar, point)| {
+                if !bool::from(scalar.is_zero()) {
+                    Some((scalar.clone(), point.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        log::debug!("Filtering Time: {:?}", filtering_time.elapsed());
+
+        // Unzip in parallel
+        let unbundling_time = Instant::now();
+        (loc_scalars, loc_points) =
+            filtered.into_par_iter().unzip();
+        log::debug!("Unbundling Time: {:?}", unbundling_time.elapsed());
+
+         (loc_scalars.as_slice(), loc_points.as_slice())
+     } else {
+        // --- NO FILTERING PATH ---
+        (scalars, points)
+     };
+
     if scalars.len() >= 2_usize.pow(17) {
         gpu_with_cpu::<C, PIN, POUT, S>(scalars, points)
     } else {
