@@ -20,7 +20,7 @@ fn generate_exp_sequence(start: u32, max_value: u32) -> Vec<u32> {
         seq.push(current);
         // Multiply by ~1.5 (coarse approximation).
         // For example: 32 -> 48 -> 72 -> 108 -> 162 -> 243 -> ...
-        current = ((current as f64) * 1.5).ceil() as u32;
+        current = ((current as f64) * 2.0).ceil() as u32;
     }
     seq
 }
@@ -201,7 +201,7 @@ fn main() {
     let min_max_threads_candidates = vec![32, 48, 64, 80];
 
     let mut best_config = Config {
-        cpu_gpu_split_ratio: 0.5,
+        cpu_gpu_split_ratio: 0.65,
         bucket_size_16: 10,
         desired_pairs_per_thread: 512,
         buckets_per_threadgroup: 1024,
@@ -213,7 +213,7 @@ fn main() {
     // We'll do a nested search but break early when we find < 60 ms.
     // Because the search can become large, we keep it short-circuited.
 
-    'outer: for &cpu_gpu_split_ratio in &cpu_gpu_split_candidates {
+    for &cpu_gpu_split_ratio in &cpu_gpu_split_candidates {
         for &bucket_size_16 in &bucket_size_16_candidates {
             for &desired_pairs_per_thread in &desired_pairs_candidates {
                 for &buckets_per_threadgroup in &buckets_candidates {

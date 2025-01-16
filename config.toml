@@ -1,5 +1,5 @@
-cpu_gpu_split_ratio = 1.0
-bucket_size_16 = 5
-desired_pairs_per_thread = 32
-buckets_per_threadgroup = 32
-min_max_threads = 48
+cpu_gpu_split_ratio = 0.65
+bucket_size_16 = 15
+desired_pairs_per_thread = 128
+buckets_per_threadgroup = 4096
+min_max_threads = 32

@@ -4,6 +4,7 @@ use std::fs;
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Config {
     /// CPU/GPU split ratio, from 0.0 to 1.0
+    #[cfg(feature = "h2c")]
     pub cpu_gpu_split_ratio: f64,
     /// Bucket size for 16-bit instance length
     pub bucket_size_16: u32,
@@ -61,6 +62,7 @@ impl ConfigManager {
     }
 
     /// Getter for `cpu_gpu_proportion` that dynamically loads the config.
+    #[cfg(feature = "h2c")]
     pub(crate) fn cpu_gpu_split_ratio(&self) -> f64 {
         self.load_config().cpu_gpu_split_ratio
     }

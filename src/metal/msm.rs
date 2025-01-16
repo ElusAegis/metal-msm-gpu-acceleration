@@ -354,13 +354,7 @@ where
 {
     // Split the scalar and points into two halves
     // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
-    let split_at = if scalar.len() < 2usize.pow(18) {
-        (scalar.len() as f64 * ConfigManager::default().cpu_gpu_split_ratio()) as usize
-    } else if scalar.len() < 2usize.pow(20) {
-        scalar.len() * 1 / 2
-    } else {
-        scalar.len() * 2 / 5
-    };
+    let split_at = (scalar.len() as f64 * ConfigManager::default().cpu_gpu_split_ratio()) as usize;
 
     let (scalar_1, scalar_2) = scalar.split_at(split_at);
     let (point_1, point_2) = points.split_at(split_at);
