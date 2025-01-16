@@ -23,6 +23,7 @@ use halo2curves::bn256::{G1Affine, G1};
 use rand::{thread_rng, Rng};
 // --- Add this (or equivalent) to run parallel chunks ---
 use rayon::prelude::*;
+use mopro_msm::metal::msm_best;
 
 fn main() {
     // Setup logger
@@ -81,22 +82,26 @@ fn main() {
 
     // Precompute affine points for CPU-based runs
     let affine_points = {
-        #[cfg(all(feature = "ark", not(feature = "h2c")))]
-        {
-            instances[0]
-                .points
-                .iter()
-                .map(|p| p.into_affine())
-                .collect::<Vec<_>>()
-        }
-        #[cfg(feature = "h2c")]
-        {
-            instances[0]
-                .points
-                .iter()
-                .map(|p| p.to_affine())
-                .collect::<Vec<_>>()
-        }
+        instances.iter().map(|instance|
+            {
+                #[cfg(all(feature = "ark", not(feature = "h2c")))]
+                {
+                    instance
+                        .points
+                        .iter()
+                        .map(|p| p.into_affine())
+                        .collect::<Vec<_>>()
+                }
+                #[cfg(feature = "h2c")]
+                {
+                    instance
+                        .points
+                        .iter()
+                        .map(|p| p.to_affine())
+                        .collect::<Vec<_>>()
+                }
+            }
+        ).collect::<Vec<_>>()
     };
 
     let start_execution = instant::Instant::now();
@@ -105,8 +110,8 @@ fn main() {
     for _ in 0..retries {
         if !parallel_runs {
             // ---- SEQUENTIAL RUNS ----
-            for instance in &instances {
-                run_selected_msm(&run_mode, &affine_points, &instance);
+            for (i, instance) in instances.iter().enumerate() {
+                run_selected_msm(&run_mode, &affine_points[i], &instance);
             }
         } else {
             // ---- PARALLEL RUNS: RANDOM CHUNK SIZES (up to 10), each MSM with random delay up to 5s ----
@@ -130,7 +135,7 @@ fn main() {
                         std::thread::sleep(Duration::from_millis(offset_ms));
                     }
 
-                    run_selected_msm(&run_mode, &affine_points, &instance);
+                    run_selected_msm(&run_mode, &affine_points[i], &instance);
                 });
             }
         }
@@ -166,6 +171,13 @@ fn run_selected_msm(run_mode: &String, affine_points: &Vec<G1Affine>, instance: 
         #[cfg(feature = "h2c")]
         "gpu_cpu" => {
             let _ = gpu_with_cpu::<GAffine, GAffine, G, Fr>(
+                &instance.scalars,
+                &affine_points,
+            );
+        }
+        #[cfg(feature = "h2c")]
+        "best_gpu" => {
+            let _ = msm_best::<GAffine, GAffine, G, Fr>(
                 &instance.scalars,
                 &affine_points,
             );
