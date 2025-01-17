@@ -24,3 +24,6 @@ src/middleware/gpu_explorations/utils/vectors
 
 # GPU exploration - proptest generated files
 proptest-regressions
+
+/build
+/GPUMsmCoreBindings
