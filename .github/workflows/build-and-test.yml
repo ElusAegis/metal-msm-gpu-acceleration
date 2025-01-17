@@ -3,7 +3,8 @@ name: Build, Test, and Lint
 on:
   push:
     branches:
-      - main, feat/further-gpu-acceleration
+      - main
+      - feat/further-gpu-acceleration
     paths-ignore:
       - "**/*.md"
   pull_request:
@@ -19,8 +20,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SCCACHE_GHA_ENABLED: "false"
-  RUSTC_WRAPPER: "sccache"
 
 jobs:
   lint:
@@ -54,11 +53,11 @@ jobs:
           override: true
       - name: Install Dependencies
         run: rustup target add aarch64-apple-ios
-      - name: Run Tests (Halo2Curves Backend)
+      - name: Run Main Tests (Halo2Curves Backend)
         env:
           RUST_LOG: debug
-        run: cargo test --release --features "h2c ark macos" --no-default-features
-      - name: Run Tests (Ark Backend)
+        run: cargo test --release --features "ark h2c ark macos" --no-default-features
+      - name: Run Ignored Tests (Ark Backend)
         env:
           RUST_LOG: debug
         run: cargo test --release --features "ark macos" --no-default-features -- --ignored --test-threads=1
