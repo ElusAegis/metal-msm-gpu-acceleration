@@ -1,6 +1,6 @@
 #[cfg(feature = "ark")]
 use ark_ec::{CurveGroup, VariableBaseMSM};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 #[cfg(feature = "h2c")]
 use halo2curves::group::Curve;
 #[cfg(feature = "ark")]
@@ -12,12 +12,10 @@ use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G}
 #[cfg(all(feature = "h2c", not(feature = "ark")))]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::metal::msm::metal_msm_parallel;
 #[cfg(feature = "ark")]
 use mopro_msm::metal::msm::setup_metal_state;
-use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
+use mopro_msm::utils::preprocess::get_or_create_msm_instances;
 use rand::rngs::OsRng;
-use std::ops::Add;
 use std::time::Duration;
 
 #[cfg(feature = "h2c")]
@@ -52,16 +50,6 @@ fn msm_gpu<P: PointGPU<24> + Sync, S: ScalarGPU<8> + Sync>(instances: &Vec<MsmIn
             &mut metal_config,
         )
         .unwrap();
-    }
-}
-
-fn msm_gpu_par<P, S>(instances: &Vec<MsmInstance<P, S>>, target_msm_log_size: Option<usize>)
-where
-    P: PointGPU<24> + Add<P, Output = P> + Send + Sync + Clone,
-    S: ScalarGPU<8> + Send + Sync,
-{
-    for instance in instances {
-        let _ = metal_msm_parallel(instance, target_msm_log_size);
     }
 }
 
@@ -133,42 +121,6 @@ fn benchmark_msm(criterion: &mut Criterion) {
     #[cfg(feature = "ark")]
     bench_group.bench_function("msm_gpu", |b| b.iter(|| msm_gpu(&instances)));
 
-    // Benchmark parallel GPU implementation
-    #[cfg(feature = "ark")]
-    bench_group.bench_function("msm_gpu_par", |b| b.iter(|| msm_gpu_par(&instances, None)));
-
-    bench_group.finish();
-}
-
-fn benchmark_find_optimal_par_par_gpu(criterion: &mut Criterion) {
-    init_logger();
-
-    let mut bench_group = criterion.benchmark_group("parameter_benches_par_gpu");
-
-    // Set target time and sample size
-    bench_group.sample_size(20); // Number of iterations to run
-    bench_group.measurement_time(Duration::from_secs(15)); // Total time per benchmark
-
-    let rng = OsRng;
-
-    const LOG_INSTANCE_SIZE: u32 = 16;
-    const NUM_INSTANCES: u32 = 5;
-
-    let instances =
-        get_or_create_msm_instances::<G, Fr>(LOG_INSTANCE_SIZE, NUM_INSTANCES, rng, None).unwrap();
-
-    let target_msm_sizes = 11..16usize;
-
-    for target_msm_size in target_msm_sizes {
-        bench_group.bench_with_input(
-            BenchmarkId::new("msm_gpu_optimal_log_chunk_size", target_msm_size),
-            &target_msm_size,
-            |b, &v| {
-                b.iter(|| msm_gpu_par(&instances, Some(v)));
-            },
-        );
-    }
-
     bench_group.finish();
 }
 
@@ -187,10 +139,6 @@ fn init_logger() {
 
 // Criterion groups
 criterion_group!(general_benches, benchmark_msm);
-criterion_group!(
-    parameter_benches_par_gpu,
-    benchmark_find_optimal_par_par_gpu
-);
 
 // Criterion main
-criterion_main!(general_benches, parameter_benches_par_gpu);
+criterion_main!(general_benches);
