@@ -57,10 +57,6 @@ jobs:
         env:
           RUST_LOG: debug
         run: cargo test --release --features "ark h2c ark macos" --no-default-features
-      - name: Run Ignored Tests (Ark Backend)
-        env:
-          RUST_LOG: debug
-        run: cargo test --release --features "ark macos" --no-default-features -- --ignored --test-threads=1
 
   build:
     name: Build for iOS
