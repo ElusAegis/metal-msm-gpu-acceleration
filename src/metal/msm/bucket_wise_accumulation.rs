@@ -37,8 +37,7 @@ pub fn bucket_wise_accumulation(config: &MetalMsmConfig, instance: &MetalMsmInst
     // For safety, clamp the max GPU threads
     let desired_pairs_per_thread = 128;
     let actual_threads =
-        ((params.instances_size * params.window_num) as u64 + desired_pairs_per_thread - 1)
-            / desired_pairs_per_thread;
+        ((params.instances_size * params.window_num) as u64).div_ceil(desired_pairs_per_thread);
     // Or choose some other logic if you'd prefer a smaller # of threads
 
     // Threads per group
@@ -50,7 +49,7 @@ pub fn bucket_wise_accumulation(config: &MetalMsmConfig, instance: &MetalMsmInst
         .min(actual_threads);
 
     // # of threadgroups
-    let num_thread_groups = (actual_threads + threads_per_group - 1) / threads_per_group;
+    let num_thread_groups = actual_threads.div_ceil(threads_per_group);
 
     let mtl_threadgroups = MTLSize::new(num_thread_groups, 1, 1);
     let mtl_threads_per_group = MTLSize::new(threads_per_group, 1, 1);

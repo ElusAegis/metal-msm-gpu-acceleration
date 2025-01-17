@@ -222,7 +222,7 @@ pub mod h2c {
         }
     }
 
-    impl<'a> Write for SliceWriter<'a> {
+    impl Write for SliceWriter<'_> {
         fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, std::io::Error> {
             let available = self.buffer.len() - self.pos;
             let to_write = buf.len().min(available);
