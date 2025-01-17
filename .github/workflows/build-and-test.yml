@@ -3,7 +3,7 @@ name: Build, Test, and Lint
 on:
   push:
     branches:
-      - main
+      - main, feat/further-gpu-acceleration
     paths-ignore:
       - "**/*.md"
   pull_request:
@@ -36,8 +36,10 @@ jobs:
           override: true
       - name: Check Formatting
         run: cargo fmt --all -- --check
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run Clippy (macOS)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run Clippy (iOS)
+        run: cargo clippy --all-targets --features "h2c ios-bindings" --no-default-features -- -D warnings
 
   test:
     name: Run Tests
@@ -55,11 +57,11 @@ jobs:
       - name: Run Tests (Halo2Curves Backend)
         env:
           RUST_LOG: debug
-        run: cargo test --release --features "h2c macos" --no-default-features
+        run: cargo test --release --features "h2c ark macos" --no-default-features
       - name: Run Tests (Ark Backend)
         env:
           RUST_LOG: debug
-        run: cargo test --release --features "ark macos" --no-default-features
+        run: cargo test --release --features "ark macos" --no-default-features -- --ignored --test-threads=1
 
   build:
     name: Build for iOS
@@ -75,4 +77,4 @@ jobs:
       - name: Install Dependencies
         run: rustup target add aarch64-apple-ios
       - name: Build for iOS
-        run: cargo build --features "h2c ios" --no-default-features
+        run: cargo run --release --bin gen_ios_bindings --features "h2c ios-bindings" --no-default-features
