@@ -51,6 +51,7 @@ cargo test --features "h2c ark macos" --no-default-features --release -- --test-
      - Second: Number of instances
      - Third: Algorithm to use (refer to `gpu_profiler` source for options)
      - Fourth: Number of reruns for consistent results.
+     - **Note**: You can also change the logging level to `debug` for more detailed output on the GPU implementation.
 
 3. **iOS Benchmarking**:
    The `ios-metal-benchmarker` project allows performance measurement on iPhones:
