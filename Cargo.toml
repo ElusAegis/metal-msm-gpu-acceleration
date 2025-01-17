@@ -18,7 +18,7 @@ name = "gen_ios_bindings"
 required-features = ["ios-bindings"]
 
 [features]
-default = ["macos", "ark"]
+default = ["macos", "h2c"]
 
 ark = ["ark-ec", "ark-bn254", "ark-ff", "ark-std"]
 h2c = ["halo2curves"]

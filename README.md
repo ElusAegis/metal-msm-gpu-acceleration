@@ -1,41 +1,74 @@
-# mopro msm gpu-acceleration
+# halo2curves MSM Acceleration
 
-We are researching and implementing methods to accelerate multi-scalar multiplication (MSM) on IOS mobile device.
+This package provides GPU-accelerated Multi-Scalar Multiplication (MSM) for the `halo2curves` library, optimized for Apple M-series chips and iPhones. It supports both `halo2curves` and `arkworks` curve implementations, with a primary focus on the BN254 curve.
 
-## mopro-msm
+## Features
 
-This is a of various implementations of MSM functions, which are then integrated in `mopro-core`.
+1. **Curve Support**:
+   - `halo2curves` (use the `h2c` feature)
+   - `arkworks` (use the `ark` feature)
+   - Only BN254 is supported at the moment.
 
-### Run benchmark on the laptop
-Currently we support these MSM algorithms on BN254:
-- arkworks_pippenger
-- bucket_wise_msm
-- precompute_msm
-- metal::msm (GPU)
+2. **Platform-Specific Shader Compilation**:
+   - For macOS, use the `macos` feature.
+   - For iOS, use the `ios` feature.
+   - **Note**: These features are mutually exclusive as Metal shaders are compiled during the build process (`build.rs`).
 
-Replace `MSM_ALGO` with one of the algorithms above to get the corresponding benchmarks.
+## Testing
 
-Benchmarking using Criterion (recommended)
-```sh
-cargo bench --features h2c 
+To run all tests:
+```
+cargo test --features "h2c ark macos" --no-default-features --release
 ```
 
-Benchmarking for <u>multiple instance size</u>:
-```sh
-cargo test --release --package mopro-msm --lib -- msm::MSM_ALGO::tests::*test_run_multi_benchmarks --exact --nocapture
+Some `arkworks` MSM tests are ignored by default due to concurrency issues. Run these separately with:
+```
+cargo test --features "h2c ark macos" --no-default-features --release -- --test-threads=1 --ignored
 ```
 
+## Benchmarking
 
+1. **General Benchmarking**:
+   ```
+   cargo bench -- benchmark_msm
+   ```
+   This benchmarks:
+   - The `halo2curves` implementation
+   - The GPU-accelerated implementation
+   - For log size 20 and 5 instances by default.
+   
+    To benchmark the `arkworks` implementation, use the `ark` feature:
+   ```
+    cargo bench --features "ark" -- benchmark_msm
+    ```
+2. **Custom Benchmarking**:
+   Use the `gpu_profiler` binary for fine-grained control:
+   ```
+   RUST_LOG=info cargo run --release --bin gpu_profiler 20 5 gpu_cpu 10
+   ```
+   - **Arguments**:
+     - First: MSM log size
+     - Second: Number of instances
+     - Third: Algorithm to use (refer to `gpu_profiler` source for options)
+     - Fourth: Number of reruns for consistent results.
 
-## gpu-exploration-app
+3. **iOS Benchmarking**:
+   The `ios-metal-benchmarker` project allows performance measurement on iPhones:
+   - Generate iOS bindings:
+     ```
+     cargo run --release --bin gen_ios_bindings
+     ```
+   - Follow the Mopro iOS setup guide for integrating the bindings:
+     [iOS Setup Tutorial](https://zkmopro.org/docs/setup/ios-setup)
 
-This is a benchmark app to compare the performance of different algorithms on iOS device.
+## Installation
 
-You can run the following commands in the root directory of the project to compile the metal library for a given OS:
-```sh
-# for macOS
-bash mopro-msm/src/msm/metal/compile_metal.sh
+Ensure you have a macOS machine with an M-series chip (or an iPhone for iOS benchmarks). Compilation for iOS still requires a macOS environment.
 
-# for iphoneOS
-bash mopro-msm/src/msm/metal/compile_metal_iphone.sh
-```
+## Contributions
+
+Contributions are welcome! Please open issues for feature requests or bug reports.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
