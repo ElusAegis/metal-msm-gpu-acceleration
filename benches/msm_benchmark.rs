@@ -12,7 +12,9 @@ use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr, H2GAffine, H2G}
 #[cfg(all(feature = "h2c", not(feature = "ark")))]
 use mopro_msm::metal::abstraction::limbs_conversion::h2c::{H2Fr as Fr, H2G as G};
 use mopro_msm::metal::abstraction::limbs_conversion::{PointGPU, ScalarGPU};
-use mopro_msm::metal::msm::{metal_msm_parallel, setup_metal_state};
+use mopro_msm::metal::msm::metal_msm_parallel;
+#[cfg(feature = "ark")]
+use mopro_msm::metal::msm::setup_metal_state;
 use mopro_msm::utils::preprocess::{get_or_create_msm_instances, MsmInstance};
 use rand::rngs::OsRng;
 use std::ops::Add;
@@ -87,7 +89,7 @@ fn benchmark_msm(criterion: &mut Criterion) {
                 instance
                     .points
                     .iter()
-                    .map(|p| PointGPU::into::<H2G>(p))
+                    .map(PointGPU::into::<H2G>)
                     .map(|p| p.to_affine())
                     .collect::<Vec<_>>(),
                 instance

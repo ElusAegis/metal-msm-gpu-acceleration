@@ -280,10 +280,10 @@ pub mod h2c {
     }
 
     impl ToLimbs<8> for H2Fr {
-        fn write_u32_limbs(&self, mut out: &mut [u32]) {
+        fn write_u32_limbs(&self, out: &mut [u32]) {
             let input = self.to_bytes(); // 32 bytes
                                          // Fill out[] in reverse order of 4-byte chunks
-            bytes_to_u32_reverse(&input, &mut out);
+            bytes_to_u32_reverse(&input, out);
         }
     }
 
@@ -554,7 +554,7 @@ mod test {
             // Deserialize the limbs back into Fq elements
             let fs_prime: Vec<H2Fq> = list_limbs
                 .chunks_exact(8) // Assuming ArkFq has 8 limbs
-                .map(|chunk| H2Fq::from_u32_limbs(chunk))
+                .map(H2Fq::from_u32_limbs)
                 .collect();
 
             // Check that the original list and the deserialized list are equal

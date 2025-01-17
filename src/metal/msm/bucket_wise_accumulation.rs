@@ -12,8 +12,8 @@ use objc::rc::autoreleasepool;
 /// This kernel reads:
 /// - `buckets_indices`: array of `(bucket_index, point_index)` sorted ascending by `bucket_index`
 /// - `p_buff`: array of GPU points (`Point`) of length = number of input points
-/// and accumulates all points for each unique `bucket_index` into the `buckets_matrix` array
-/// so that `buckets_matrix[bucket_index]` is the sum of all points mapping to `b`.
+///   and accumulates all points for each unique `bucket_index` into the `buckets_matrix` array
+///   so that `buckets_matrix[bucket_index]` is the sum of all points mapping to `b`.
 ///
 /// # Arguments
 ///

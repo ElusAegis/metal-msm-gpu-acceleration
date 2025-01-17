@@ -11,7 +11,7 @@ fn benchmark_h2c_metal_and_cpu_msm_best(log_size: u32) -> u64 {
     crate::metal::msm_best::<H2GAffine, H2GAffine, H2G, H2Fr>(&scalars, &points);
     let duration = start.elapsed();
 
-    return duration.as_millis() as u64;
+    duration.as_millis() as u64
 }
 
 #[uniffi::export]
@@ -22,7 +22,7 @@ fn benchmark_h2c_cpu_msm_best(log_size: u32) -> u64 {
     halo2curves::msm::msm_best(&scalars, &points);
     let duration = start.elapsed();
 
-    return duration.as_millis() as u64;
+    duration.as_millis() as u64
 }
 
 fn prepare_instance(log_size: u32) -> (Vec<G1Affine>, Vec<Fr>) {
@@ -30,7 +30,6 @@ fn prepare_instance(log_size: u32) -> (Vec<G1Affine>, Vec<Fr>) {
     let instance_size = 1 << log_size;
 
     (0..instance_size)
-        .into_iter()
         .map(|_| {
             let point = H2GAffine::random(&mut rng);
             let scalar = H2Fr::random(&mut rng);

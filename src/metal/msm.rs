@@ -421,6 +421,7 @@ where
 {
     // Split the scalar and points into two halves
     // TODO - learn how to select the best split ratio - for lower values of n, CPU is faster
+    #[allow(clippy::identity_op)]
     let split_at = if scalar.len() < 2usize.pow(18) {
         scalar.len() * 1 / 3
     } else if scalar.len() < 2usize.pow(20) {
@@ -536,7 +537,7 @@ fn filter_zeros<C: halo2curves::CurveAffine>(
         .zip(points.par_iter())
         .filter_map(|(scalar, point)| {
             if !bool::from(scalar.is_zero()) {
-                Some((scalar.clone(), point.clone()))
+                Some((*scalar, *point))
             } else {
                 None
             }
@@ -676,7 +677,7 @@ mod tests {
         fn test_gpu_msm_correctness_medium_sample_h2c() {
             init_logger();
 
-            let rng = OsRng::default();
+            let rng = OsRng;
 
             let instances = get_or_create_msm_instances::<H2G, H2Fr>(
                 LOG_INSTANCE_SIZE,
@@ -713,7 +714,7 @@ mod tests {
         fn test_gpu_cpu_correctness_medium_sample_h2c() {
             init_logger();
 
-            let rng = OsRng::default();
+            let rng = OsRng;
 
             let instances = get_or_create_msm_instances::<H2G, H2Fr>(
                 LOG_INSTANCE_SIZE,
@@ -750,7 +751,7 @@ mod tests {
         fn test_best_msm_correctness_medium_sample_h2c() {
             init_logger();
 
-            let rng = OsRng::default();
+            let rng = OsRng;
 
             let instances = get_or_create_msm_instances::<H2G, H2Fr>(
                 LOG_INSTANCE_SIZE,

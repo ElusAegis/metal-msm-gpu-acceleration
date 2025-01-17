@@ -63,7 +63,7 @@ fn main() {
     log::info!("Parallel runs: {}", parallel_runs);
 
     // RNG initialization
-    let rng = OsRng::default();
+    let rng = OsRng;
 
     // Load MSM instances
     let instances =
@@ -102,7 +102,7 @@ fn main() {
         if !parallel_runs {
             // ---- SEQUENTIAL RUNS ----
             for (i, instance) in instances.iter().enumerate() {
-                run_selected_msm(&run_mode, &affine_points[i], &instance);
+                run_selected_msm(&run_mode, &affine_points[i], instance);
             }
         } else {
             // ---- PARALLEL RUNS: RANDOM CHUNK SIZES (up to 10), each MSM with random delay up to 5s ----
@@ -126,7 +126,7 @@ fn main() {
                         std::thread::sleep(Duration::from_millis(offset_ms));
                     }
 
-                    run_selected_msm(&run_mode, &affine_points[i], &instance);
+                    run_selected_msm(&run_mode, &affine_points[i], instance);
                 });
             }
         }
@@ -140,32 +140,28 @@ fn main() {
     );
 }
 
-fn run_selected_msm(
-    run_mode: &String,
-    affine_points: &Vec<G1Affine>,
-    instance: &MsmInstance<G1, Fr>,
-) {
+fn run_selected_msm(run_mode: &String, affine_points: &[G1Affine], instance: &MsmInstance<G1, Fr>) {
     // Run the MSM
     match run_mode.as_str() {
         "gpu" => {
-            let _ = gpu_msm_h2c::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
+            let _ = gpu_msm_h2c::<GAffine, GAffine, G, Fr>(&instance.scalars, affine_points);
         }
         "gpu_cpu" => {
-            let _ = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
+            let _ = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, affine_points);
         }
         #[cfg(feature = "h2c")]
         "best_gpu" => {
-            let _ = msm_best::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points);
+            let _ = msm_best::<GAffine, GAffine, G, Fr>(&instance.scalars, affine_points);
         }
         #[cfg(feature = "h2c")]
         "cpu" => {
-            let _ = halo2curves::msm::msm_best(&instance.scalars, &affine_points);
+            let _ = halo2curves::msm::msm_best(&instance.scalars, affine_points);
         }
         #[cfg(feature = "h2c")]
         "check" => {
-            let res1 = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, &affine_points)
+            let res1 = gpu_with_cpu::<GAffine, GAffine, G, Fr>(&instance.scalars, affine_points)
                 .to_affine();
-            let res2 = halo2curves::msm::msm_best(&instance.scalars, &affine_points).to_affine();
+            let res2 = halo2curves::msm::msm_best(&instance.scalars, affine_points).to_affine();
             assert_eq!(res1, res2);
         }
         _ => {
